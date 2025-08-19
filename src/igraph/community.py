@@ -391,6 +391,7 @@ def _community_leiden(
     beta=0.01,
     initial_membership=None,
     n_iterations=2,
+    only_local_moving=False,
     node_weights=None,
     **kwds,
 ):
@@ -418,6 +419,11 @@ def _community_leiden(
       a negative number of iterations will run until a stable iteration is
       encountered (i.e. the quality was not increased during that
       iteration).
+    @param only_local_moving: if true, only the local moving phase (phase 1)
+      of the Leiden algorithm is executed. This skips the refinement phase
+      (phase 2) and the aggregation phase (phase 3), resulting in a faster
+      but potentially lower quality clustering. If false, the complete
+      three-phase Leiden algorithm is executed.
     @param node_weights: the node weights used in the Leiden algorithm.
       If this is not provided, it will be automatically determined on the
       basis of whether you want to use CPM or modularity. If you do provide
@@ -448,6 +454,7 @@ def _community_leiden(
         beta=beta,
         initial_membership=initial_membership,
         n_iterations=n_iterations,
+        only_local_moving=only_local_moving,
     )
 
     params = {"quality": quality}
