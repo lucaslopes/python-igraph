@@ -351,3 +351,31 @@ jobs:
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
           LD_PRELOAD=/lib/x86_64-linux-gnu/libasan.so.8:/lib/x86_64-linux-gnu/libubsan.so.1 python -m pytest --capture=sys tests
+
+  publish_pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build_wheel_linux
+      - build_wheel_linux_aarch64_manylinux
+      - build_wheel_linux_aarch64_musllinux
+      - build_wheel_macos
+      - build_wheel_wasm
+      - build_wheel_win
+      - build_sdist
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          merge-multiple: true
+          path: dist
+      - name: Remove wheels not supported by PyPI
+        run: |
+          echo "Removing Pyodide wheels (not supported by PyPI)"
+          rm -f dist/*pyodide*.whl || true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
