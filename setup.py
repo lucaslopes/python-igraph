@@ -971,9 +971,9 @@ if should_build_abi3_wheel:
     cmdclass["bdist_wheel"] = bdist_wheel_abi3
 
 options = {
-    "name": "igraph",
+    "name": "lucas-igraph",
     "version": __version__,
-    "url": "https://igraph.org/python",
+    "url": "https://github.com/lucaslopes/python-igraph",
     "description": "High performance graph data structures and algorithms",
     "long_description": description,
     "license": "GNU General Public License (GPL)",
