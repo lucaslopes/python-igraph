@@ -391,6 +391,7 @@ def _community_leiden(
     beta=0.01,
     initial_membership=None,
     n_iterations=2,
+    allow_isolation=True,
     only_local_moving=False,
     node_weights=None,
     **kwds,
@@ -419,6 +420,10 @@ def _community_leiden(
       a negative number of iterations will run until a stable iteration is
       encountered (i.e. the quality was not increased during that
       iteration).
+    @param allow_isolation: If true, nodes are allowed to move to empty
+      communities, effectively creating new clusters. If false, nodes
+      can only move to existing non-empty communities, preventing the
+      formation of new clusters.
     @param only_local_moving: if true, only the local moving phase (phase 1)
       of the Leiden algorithm is executed. This skips the refinement phase
       (phase 2) and the aggregation phase (phase 3), resulting in a faster
@@ -454,6 +459,7 @@ def _community_leiden(
         beta=beta,
         initial_membership=initial_membership,
         n_iterations=n_iterations,
+        allow_isolation=allow_isolation,
         only_local_moving=only_local_moving,
     )
 

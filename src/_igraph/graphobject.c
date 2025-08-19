@@ -13575,11 +13575,12 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         PyObject *args, PyObject *kwds) {
 
   static char *kwlist[] = {"edge_weights", "node_weights", "resolution",
-                           "normalize_resolution", "beta", "initial_membership", "n_iterations", "only_local_moving", NULL};
+                           "normalize_resolution", "beta", "initial_membership", "n_iterations", "allow_isolation", "only_local_moving", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
   PyObject *initial_membership_o = Py_None;
+  PyObject *allow_isolation_o = Py_True;
   PyObject *only_local_moving_o = Py_False;
   PyObject *normalize_resolution = Py_False;
   PyObject *res = Py_None;
@@ -13590,15 +13591,17 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   double beta = 0.01;
   igraph_vector_t *edge_weights = NULL, *node_weights = NULL;
   igraph_vector_int_t *membership = NULL;
+  igraph_bool_t allow_isolation = true;
   igraph_bool_t only_local_moving = false;
   igraph_bool_t start = true;
   igraph_integer_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOdOdOnO", kwlist,
-        &edge_weights_o, &node_weights_o, &resolution, &normalize_resolution, &beta, &initial_membership_o, &n_iterations, &only_local_moving_o))
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOdOdOnOO", kwlist,
+        &edge_weights_o, &node_weights_o, &resolution, &normalize_resolution, &beta, &initial_membership_o, &n_iterations, &allow_isolation_o, &only_local_moving_o))
     return NULL;
 
+  allow_isolation = PyObject_IsTrue(allow_isolation_o);
   only_local_moving = PyObject_IsTrue(only_local_moving_o);
 
   if (n_iterations >= 0) {
@@ -13665,7 +13668,9 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     error = igraph_community_leiden(&self->g,
                                     edge_weights, node_weights,
                                     resolution, beta,
-                                    start, n_iterations, only_local_moving, membership,
+                                    start, n_iterations,
+                                    allow_isolation, only_local_moving,
+                                    membership,
                                     &nb_clusters, &quality);
   }
 
@@ -18548,7 +18553,7 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    METH_VARARGS | METH_KEYWORDS,
    "community_leiden(edge_weights=None, node_weights=None, "
    "resolution=1.0, normalize_resolution=False, beta=0.01, "
-   "initial_membership=None, n_iterations=2, only_local_moving=False)\n--\n\n"
+   "initial_membership=None, n_iterations=2, allow_isolation=True, only_local_moving=False)\n--\n\n"
    "Finds the community structure of the graph using the Leiden algorithm of\n"
    "Traag, van Eck & Waltman.\n\n"
    "@param edge_weights: edge weights to be used. Can be a sequence or\n"
@@ -18571,6 +18576,10 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "  also set this parameter to a negative number, which means that the\n"
    "  algorithm will be iterated until an iteration does not change the\n"
    "  current membership vector any more.\n"
+   "@param allow_isolation: If true, nodes are allowed to move to empty\n"
+   "  communities, effectively creating new clusters. If false, nodes\n"
+   "  can only move to existing non-empty communities, preventing the\n"
+   "  formation of new clusters.\n"
    "@param only_local_moving: If true, only the local moving phase (phase 1)\n"
    "  of the Leiden algorithm is executed. This skips the refinement phase\n"
    "  (phase 2) and the aggregation phase (phase 3), resulting in a faster\n"
