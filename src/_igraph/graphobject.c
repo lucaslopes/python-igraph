@@ -13569,13 +13569,19 @@ PyObject *igraphmodule_Graph_community_walktrap(igraphmodule_GraphObject * self,
 }
 
 /**
- * Leiden community detection method of Traag, Waltman & van Eck
+ * Leiden community detection (disjoint and overlapping).
+ *
+ * max_memberships == 1 selects the classical disjoint path and returns
+ * (membership, quality). max_memberships > 1 selects overlapping Leiden-CPM
+ * and returns (memberships, nb_clusters, quality).
  */
 PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         PyObject *args, PyObject *kwds) {
 
   static char *kwlist[] = {"edge_weights", "node_weights", "resolution",
-                           "normalize_resolution", "beta", "initial_membership", "n_iterations", "allow_isolation", "only_local_moving", NULL};
+                           "normalize_resolution", "beta", "max_memberships",
+                           "initial_membership", "n_iterations",
+                           "allow_isolation", "only_local_moving", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
@@ -13586,23 +13592,32 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   PyObject *res = Py_None;
 
   int error = 0;
+  Py_ssize_t max_memberships = 1;
   Py_ssize_t n_iterations = 2;
   double resolution = 1.0;
   double beta = 0.01;
   igraph_vector_t *edge_weights = NULL, *node_weights = NULL;
   igraph_vector_int_t *membership = NULL;
+  igraph_vector_int_list_t memberships;
+  igraph_bool_t memberships_valid = false;
   igraph_bool_t allow_isolation = true;
   igraph_bool_t only_local_moving = false;
-  igraph_bool_t start = true;
+  igraph_bool_t start = false;
+  igraph_bool_t overlapping;
   igraph_integer_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOdOdOnOO", kwlist,
-        &edge_weights_o, &node_weights_o, &resolution, &normalize_resolution, &beta, &initial_membership_o, &n_iterations, &allow_isolation_o, &only_local_moving_o))
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOdOdnOnOO", kwlist,
+        &edge_weights_o, &node_weights_o, &resolution, &normalize_resolution,
+        &beta, &max_memberships, &initial_membership_o, &n_iterations,
+        &allow_isolation_o, &only_local_moving_o))
     return NULL;
 
   allow_isolation = PyObject_IsTrue(allow_isolation_o);
   only_local_moving = PyObject_IsTrue(only_local_moving_o);
+
+  CHECK_SSIZE_T_RANGE_POSITIVE(max_memberships, "maximum number of memberships");
+  overlapping = (max_memberships > 1);
 
   if (n_iterations >= 0) {
     CHECK_SSIZE_T_RANGE(n_iterations, "number of iterations");
@@ -13624,25 +13639,45 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     error = -1;
   }
 
-  /* Get initial membership */
-  if (!error && igraphmodule_attrib_to_vector_int_t(initial_membership_o, self, &membership,
-    ATTRIBUTE_TYPE_VERTEX)) {
-    igraphmodule_handle_igraph_error();
-    error = -1;
-  }
-
-  if (!error && membership == 0) {
-    start = 0;
-    membership = (igraph_vector_int_t*)calloc(1, sizeof(igraph_vector_int_t));
-    if (membership==0) {
-      PyErr_NoMemory();
+  if (!overlapping) {
+    /* Disjoint: initial membership is a flat per-vertex community id. */
+    if (!error && igraphmodule_attrib_to_vector_int_t(initial_membership_o, self, &membership,
+      ATTRIBUTE_TYPE_VERTEX)) {
+      igraphmodule_handle_igraph_error();
       error = -1;
-    } else {
-      igraph_vector_int_init(membership, 0);
+    }
+
+    if (!error && membership == 0) {
+      start = 0;
+      membership = (igraph_vector_int_t*)calloc(1, sizeof(igraph_vector_int_t));
+      if (membership==0) {
+        PyErr_NoMemory();
+        error = -1;
+      } else {
+        igraph_vector_int_init(membership, 0);
+      }
+    } else if (!error) {
+      start = 1;
+    }
+  } else {
+    /* Overlapping: initial membership is a list of community-id lists. */
+    if (!error) {
+      if (initial_membership_o != Py_None) {
+        if (igraphmodule_PyObject_to_vector_int_list_t(initial_membership_o, &memberships)) {
+          error = -1;
+        } else {
+          start = true;
+          memberships_valid = true;
+        }
+      } else {
+        igraph_vector_int_list_init(&memberships, 0);
+        memberships_valid = true;
+        start = false;
+      }
     }
   }
 
-  if (PyObject_IsTrue(normalize_resolution))
+  if (!error && PyObject_IsTrue(normalize_resolution))
   {
     /* If we need to normalize the resolution parameter,
      * we will need to have node weights. */
@@ -13660,18 +13695,23 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         }
       }
     }
-    resolution /= igraph_vector_sum(node_weights);
+    if (!error) {
+      resolution /= igraph_vector_sum(node_weights);
+    }
   }
 
-  /* Run actual Leiden algorithm for several iterations. */
+  /* Run unified Leiden API. */
   if (!error) {
     error = igraph_community_leiden(&self->g,
                                     edge_weights, node_weights,
                                     resolution, beta,
-                                    start, n_iterations,
+                                    (igraph_integer_t)max_memberships,
+                                    start, (igraph_integer_t)n_iterations,
                                     allow_isolation, only_local_moving,
-                                    membership,
+                                    overlapping ? NULL : membership,
+                                    overlapping ? &memberships : NULL,
                                     &nb_clusters, &quality);
+    if (error) igraphmodule_handle_igraph_error();
   }
 
   if (edge_weights != 0) {
@@ -13683,17 +13723,27 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     free(node_weights);
   }
 
-  if (!error && membership != 0) {
-    res = igraphmodule_vector_int_t_to_PyList(membership);
+  if (!overlapping) {
+    if (!error && membership != 0) {
+      res = igraphmodule_vector_int_t_to_PyList(membership);
+    }
+    if (membership != 0) {
+      igraph_vector_int_destroy(membership);
+      free(membership);
+    }
+    return error ? NULL : Py_BuildValue("Nd", res, (double) quality);
   }
 
-  if (membership != 0) {
-    igraph_vector_int_destroy(membership);
-    free(membership);
+  if (!error) {
+    res = igraphmodule_vector_int_list_t_to_PyList(&memberships);
+  }
+  if (memberships_valid) {
+    igraph_vector_int_list_destroy(&memberships);
   }
 
-  return error ? NULL : Py_BuildValue("Nd", res, (double) quality);
+  return error ? NULL : Py_BuildValue("Nnd", res, (Py_ssize_t) nb_clusters, (double)quality);
 }
+
 
 /**********************************************************************
  * Random walks                                                       *
@@ -18553,9 +18603,11 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    METH_VARARGS | METH_KEYWORDS,
    "community_leiden(edge_weights=None, node_weights=None, "
    "resolution=1.0, normalize_resolution=False, beta=0.01, "
-   "initial_membership=None, n_iterations=2, allow_isolation=True, only_local_moving=False)\n--\n\n"
+   "max_memberships=1, initial_membership=None, n_iterations=2, "
+   "allow_isolation=True, only_local_moving=False)\n--\n\n"
    "Finds the community structure of the graph using the Leiden algorithm of\n"
-   "Traag, van Eck & Waltman.\n\n"
+   "Traag, van Eck & Waltman. Supports both disjoint and overlapping modes\n"
+   "selected by max_memberships.\n\n"
    "@param edge_weights: edge weights to be used. Can be a sequence or\n"
    "  iterable or even an edge attribute name.\n"
    "@param node_weights: the node weights used in the Leiden algorithm.\n"
@@ -18568,9 +18620,15 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "  in case edge_weights are supplied.\n"
    "@param beta: parameter affecting the randomness in the Leiden \n"
    "  algorithm. This affects only the refinement step of the algorithm.\n"
+   "@param max_memberships: maximum number of communities a vertex may belong\n"
+   "  to. 1 (default) selects disjoint Leiden and returns (membership,\n"
+   "  quality). Values greater than 1 select overlapping Leiden-CPM and\n"
+   "  return (memberships, nb_clusters, quality).\n"
    "@param initial_membership: if provided, the Leiden algorithm\n"
-   "  will try to improve this provided membership. If no argument is\n"
-   "  provided, the aglorithm simply starts from the singleton partition.\n"
+   "  will try to improve this provided membership/cover. For\n"
+   "  max_memberships=1 this is a flat community-id list; for\n"
+   "  max_memberships>1 it is a list of community-id lists. If no argument\n"
+   "  is provided, the algorithm starts from the singleton partition/cover.\n"
    "@param n_iterations: the number of iterations to iterate the Leiden\n"
    "  algorithm. Each iteration may improve the partition further. You can\n"
    "  also set this parameter to a negative number, which means that the\n"
@@ -18585,7 +18643,8 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "  (phase 2) and the aggregation phase (phase 3), resulting in a faster\n"
    "  but potentially lower quality clustering. If false, the complete\n"
    "  three-phase Leiden algorithm is executed.\n"
-   "@return: the community membership vector.\n"
+   "@return: (membership, quality) when max_memberships==1, or\n"
+   "  (memberships, nb_clusters, quality) when max_memberships>1.\n"
   },
   {"community_walktrap",
    (PyCFunction) igraphmodule_Graph_community_walktrap,
