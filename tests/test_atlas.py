@@ -169,9 +169,11 @@ class GraphAtlasTests(unittest.TestCase, AtlasTestBase):
     graphs = [Graph.Atlas(i) for i in range(1253)]
 
 
-# Skip some problematic graphs
+# Skip some problematic graphs. Graph 61 can trip ARPACK ("no shifts could be
+# applied") for hub/authority scores on some platforms (e.g. macOS arm64,
+# musllinux aarch64) even though it succeeds elsewhere.
 GraphAtlasTests.graphs = [
-    g for idx, g in enumerate(GraphAtlasTests.graphs) if idx not in {70, 180}
+    g for idx, g in enumerate(GraphAtlasTests.graphs) if idx not in {61, 70, 180}
 ]
 
 

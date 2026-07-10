@@ -639,6 +639,19 @@ class CommunityTests(unittest.TestCase):
         )
         self.assertMembershipsEqual(cl, [0, 1, 0, 0, 0, 1, 1, 1])
 
+    def testLeidenOverlapping(self):
+        g = Graph.Formula("0-1, 1-2, 2-0, 2-3, 3-4, 4-2")
+        cover = g.community_leiden(
+            objective_function="CPM",
+            resolution=0.5,
+            max_memberships=2,
+            n_iterations=5,
+        )
+        from igraph.clustering import VertexCover
+        self.assertIsInstance(cover, VertexCover)
+        self.assertGreaterEqual(len(cover), 2)
+
+
 
 class CohesiveBlocksTests(unittest.TestCase):
     def genericTests(self, cbs):
