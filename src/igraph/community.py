@@ -458,14 +458,24 @@ def _community_leiden(
     weights=None,
     resolution=1.0,
     beta=0.01,
+    max_memberships=1,
     initial_membership=None,
     n_iterations=2,
+    allow_isolation=True,
+    local_move_only=False,
     node_weights=None,
-    node_in_weights=None,
     **kwds,
 ):
     """Finds the community structure of the graph using the Leiden
     algorithm of Traag, van Eck & Waltman.
+
+    Mode is selected by C{max_memberships}:
+
+      - C{max_memberships == 1} (default): classical disjoint Leiden;
+        returns a L{VertexClustering}.
+      - C{max_memberships > 1}: overlapping Leiden-CPM; each vertex may
+        belong to up to C{max_memberships} communities and the result is
+        a L{VertexCover}.
 
     B{Reference}: Traag, V. A., Waltman, L., & van Eck, N. J. (2019). From Louvain
     to Leiden: guaranteeing well-connected communities. I{Scientific Reports},
@@ -473,6 +483,8 @@ def _community_leiden(
 
     @param objective_function: whether to use the Constant Potts
       Model (CPM) or modularity. Must be either C{"CPM"} or C{"modularity"}.
+      Only used in disjoint mode (C{max_memberships == 1}); overlapping mode
+      always optimizes the overlapping CPM.
     @param weights: edge weights to be used. Can be a sequence or
       iterable or even an edge attribute name.
     @param resolution: the resolution parameter to use. Higher resolutions
@@ -480,29 +492,41 @@ def _community_leiden(
       larger communities.
     @param beta: parameter affecting the randomness in the Leiden
       algorithm. This affects only the refinement step of the algorithm.
+    @param max_memberships: maximum number of communities a vertex may
+      belong to. C{1} selects disjoint Leiden; values greater than 1 select
+      overlapping Leiden-CPM.
     @param initial_membership: if provided, the Leiden algorithm
-      will try to improve this provided membership. If no argument is
-      provided, the aglorithm simply starts from the singleton partition.
+      will try to improve this provided membership/cover. In disjoint mode
+      this is a flat community-id sequence; in overlapping mode it is a list
+      of community-id lists, one per vertex. If no argument is provided, the
+      algorithm simply starts from the singleton partition/cover.
     @param n_iterations: the number of iterations to iterate the Leiden
       algorithm. Each iteration may improve the partition further. Using
       a negative number of iterations will run until a stable iteration is
       encountered (i.e. the quality was not increased during that
       iteration).
+    @param allow_isolation: If true, nodes are allowed to move to empty
+      communities, effectively creating new clusters. If false, nodes
+      can only move to existing non-empty communities, preventing the
+      formation of new clusters.
+    @param local_move_only: if true, only the local moving phase (phase 1)
+      of the Leiden algorithm is executed. This skips the refinement phase
+      (phase 2) and the aggregation phase (phase 3), resulting in a faster
+      but potentially lower quality clustering. If false, the complete
+      three-phase Leiden algorithm is executed.
     @param node_weights: the node weights used in the Leiden algorithm.
       If this is not provided, it will be automatically determined on the
-      basis of whether you want to use CPM or modularity. If you do provide
-      this, please make sure that you understand what you are doing.
-    @param node_in_weights: the inbound node weights used in the directed
-      variant of the Leiden algorithm. If this is not provided, it will be
-      automatically determined on the basis of whether you want to use CPM or
-      modularity. If you do provide this, please make sure that you understand
-      what you are doing.
-    @return: an appropriate L{VertexClustering} object with an extra attribute
-      called C{quality} that stores the value of the internal quality function
-      optimized by the algorithm.
+      basis of whether you want to use CPM or modularity (disjoint mode).
+      If you do provide this, please make sure that you understand what you
+      are doing.
+    @return: a L{VertexClustering} when C{max_memberships == 1}, or a
+      L{VertexCover} when C{max_memberships > 1}. The clustering carries a
+      C{quality} parameter with the internal quality of the result.
     """
-    if objective_function.lower() not in ("cpm", "modularity"):
-        raise ValueError('objective_function must be "CPM" or "modularity".')
+    from igraph.clustering import VertexCover
+
+    if max_memberships < 1:
+        raise ValueError("max_memberships must be at least 1.")
 
     if "resolution_parameter" in kwds:
         deprecated(
@@ -514,27 +538,58 @@ def _community_leiden(
     if kwds:
         raise TypeError("unexpected keyword argument")
 
-    membership, quality = GraphBase.community_leiden(
+    if max_memberships == 1:
+        if objective_function.lower() not in ("cpm", "modularity"):
+            raise ValueError('objective_function must be "CPM" or "modularity".')
+
+        membership, quality = GraphBase.community_leiden(
+            graph,
+            edge_weights=weights,
+            node_weights=node_weights,
+            resolution=resolution,
+            normalize_resolution=(objective_function.lower() == "modularity"),
+            beta=beta,
+            max_memberships=1,
+            initial_membership=initial_membership,
+            n_iterations=n_iterations,
+            allow_isolation=allow_isolation,
+            local_move_only=local_move_only,
+        )
+
+        params = {"quality": quality}
+
+        modularity_params = {"resolution": resolution}
+        if weights is not None:
+            modularity_params["weights"] = weights
+
+        return VertexClustering(
+            graph, membership, params=params, modularity_params=modularity_params
+        )
+
+    # Overlapping mode: max_memberships > 1
+    memberships, nb_clusters, quality = GraphBase.community_leiden(
         graph,
         edge_weights=weights,
         node_weights=node_weights,
-        node_in_weights=node_in_weights,
         resolution=resolution,
-        normalize_resolution=(objective_function == "modularity"),
+        normalize_resolution=False,
         beta=beta,
+        max_memberships=max_memberships,
         initial_membership=initial_membership,
         n_iterations=n_iterations,
+        allow_isolation=allow_isolation,
+        local_move_only=local_move_only,
     )
 
-    params = {"quality": quality}
+    clusters = [[] for _ in range(nb_clusters)]
+    for v, comms in enumerate(memberships):
+        for c in comms:
+            clusters[c].append(v)
 
-    modularity_params = {"resolution": resolution}
-    if weights is not None:
-        modularity_params["weights"] = weights
+    cover = VertexCover(graph, clusters)
+    cover._params = {"quality": quality}
+    return cover
 
-    return VertexClustering(
-        graph, membership, params=params, modularity_params=modularity_params
-    )
 
 
 def _community_fluid_communities(graph, no_of_communities):
