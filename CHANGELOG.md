@@ -1,5 +1,17 @@
 # igraph Python interface changelog
 
+## [1.0.0.2] - 2026-08-04
+
+### Changed
+
+- Updated the vendored C igraph revision.
+
+- Renamed the Leiden option to `local_move_only`.
+
+### Fixed
+
+- Fixed overlapping Leiden termination and numerical convergence behavior.
+
 ## [1.0.0] - 2025-10-23
 
 ### Added

@@ -462,7 +462,7 @@ def _community_leiden(
     initial_membership=None,
     n_iterations=2,
     allow_isolation=True,
-    only_local_moving=False,
+    local_move_only=False,
     node_weights=None,
     **kwds,
 ):
@@ -509,7 +509,7 @@ def _community_leiden(
       communities, effectively creating new clusters. If false, nodes
       can only move to existing non-empty communities, preventing the
       formation of new clusters.
-    @param only_local_moving: if true, only the local moving phase (phase 1)
+    @param local_move_only: if true, only the local moving phase (phase 1)
       of the Leiden algorithm is executed. This skips the refinement phase
       (phase 2) and the aggregation phase (phase 3), resulting in a faster
       but potentially lower quality clustering. If false, the complete
@@ -553,7 +553,7 @@ def _community_leiden(
             initial_membership=initial_membership,
             n_iterations=n_iterations,
             allow_isolation=allow_isolation,
-            only_local_moving=only_local_moving,
+            local_move_only=local_move_only,
         )
 
         params = {"quality": quality}
@@ -578,7 +578,7 @@ def _community_leiden(
         initial_membership=initial_membership,
         n_iterations=n_iterations,
         allow_isolation=allow_isolation,
-        only_local_moving=only_local_moving,
+        local_move_only=local_move_only,
     )
 
     clusters = [[] for _ in range(nb_clusters)]

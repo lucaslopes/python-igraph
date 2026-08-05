@@ -13758,14 +13758,14 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
 
   static char *kwlist[] = {"edge_weights", "node_weights", "node_in_weights", "resolution",
                            "normalize_resolution", "beta", "max_memberships", "initial_membership", "n_iterations",
-                           "allow_isolation", "only_local_moving", NULL};
+                           "allow_isolation", "local_move_only", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
   PyObject *node_in_weights_o = Py_None;
   PyObject *initial_membership_o = Py_None;
   PyObject *allow_isolation_o = Py_True;
-  PyObject *only_local_moving_o = Py_False;
+  PyObject *local_move_only_o = Py_False;
   PyObject *normalize_resolution = Py_False;
   PyObject *res = Py_None;
 
@@ -13779,18 +13779,18 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   igraph_vector_int_list_t memberships;
   igraph_bool_t memberships_valid = false;
   igraph_bool_t allow_isolation = true;
-  igraph_bool_t only_local_moving = false;
+  igraph_bool_t local_move_only = false;
   igraph_bool_t start = true;
   igraph_bool_t overlapping;
   igraph_int_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
 
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdnOnOO", kwlist,
-        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &only_local_moving_o))
+        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &local_move_only_o))
     return NULL;
 
   allow_isolation = PyObject_IsTrue(allow_isolation_o);
-  only_local_moving = PyObject_IsTrue(only_local_moving_o);
+  local_move_only = PyObject_IsTrue(local_move_only_o);
 
   if (max_memberships < 1) {
     PyErr_SetString(PyExc_ValueError, "maximum number of memberships must be at least 1");
@@ -13898,7 +13898,7 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
                                     resolution, beta,
                                     (igraph_int_t)max_memberships,
                                     start, (igraph_int_t)n_iterations,
-                                    allow_isolation, only_local_moving,
+                                    allow_isolation, local_move_only,
                                     overlapping ? NULL : membership,
                                     overlapping ? &memberships : NULL,
                                     &nb_clusters, &quality);

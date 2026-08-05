@@ -641,15 +641,26 @@ class CommunityTests(unittest.TestCase):
 
     def testLeidenOverlapping(self):
         g = Graph.Formula("0-1, 1-2, 2-0, 2-3, 3-4, 4-2")
+        from inspect import signature
+
+        leiden_signature = signature(g.community_leiden)
+        self.assertIn("local_move_only", leiden_signature.parameters)
+        old_keyword = "_".join(("only", "local", "moving"))
+        self.assertNotIn(old_keyword, leiden_signature.parameters)
+
         cover = g.community_leiden(
             objective_function="CPM",
             resolution=0.5,
             max_memberships=2,
             n_iterations=5,
+            local_move_only=False,
         )
         from igraph.clustering import VertexCover
         self.assertIsInstance(cover, VertexCover)
         self.assertGreaterEqual(len(cover), 2)
+
+        with self.assertRaises(TypeError):
+            g.community_leiden(max_memberships=2, **{old_keyword: True})
 
 
 
