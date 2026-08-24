@@ -155,36 +155,16 @@ jobs:
           submodules: true
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
-        name: Install Python
-        with:
-          python-version: "3.12.1"
-
-      - name: Install OS dependencies
-        run: sudo apt install ninja-build cmake flex bison
-
-      - uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: "3.1.58"
-          actions-cache-folder: "emsdk-cache"
-
-      - name: Build wheel
-        run: |
-          pip install pyodide-build==0.26.2
-          python3 scripts/fix_pyodide_build.py
-          pyodide build
-
-      - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
-        if: ${{ failure() }}
-        with:
-          limit-access-to-actor: true
-          wait-timeout-minutes: 5
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.2.1
+        env:
+          CIBW_PLATFORM: pyodide
+          CIBW_TEST_SKIP: "*"
 
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-wasm
-          path: ./dist/*.whl
+          path: ./wheelhouse/*.whl
 
   build_wheel_win:
     name: Build wheels on Windows (${{ matrix.cmake_arch }})
@@ -229,12 +209,29 @@ jobs:
 
       - name: Install build dependencies
         if: steps.cache-c-core.outputs.cache-hit != 'true' # Only needed when building the C core
-        run: choco install winflexbison3 ninja
+        # Chocolatey occasionally returns 503 for the community feed; retry a few times.
+        shell: pwsh
+        run: |
+          $ok = $false
+          for ($i = 1; $i -le 5; $i++) {
+            choco install winflexbison3 ninja -y
+            if ($LASTEXITCODE -eq 0) {
+              $ok = $true
+              break
+            }
+            Write-Host "choco install failed (attempt $i), retrying in 20s..."
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ok) { throw "Failed to install winflexbison3/ninja via chocolatey" }
+          # Fail early if bison is still missing (would yield cryptic bison_target errors later).
+          if (-not (Get-Command win_bison -ErrorAction SilentlyContinue) -and -not (Get-Command bison -ErrorAction SilentlyContinue)) {
+            throw "bison not found on PATH after installing winflexbison3"
+          }
 
       - name: Install VCPKG libraries
         run: |
           %VCPKG_INSTALLATION_ROOT%\vcpkg.exe integrate install
-          %VCPKG_INSTALLATION_ROOT%\vcpkg.exe install liblzma:${{ matrix.vcpkg_arch }}-windows-static-md libxml2:${{ matrix.vcpkg_arch }}-windows-static-md
+          %VCPKG_INSTALLATION_ROOT%\vcpkg.exe install liblzma:${{ matrix.vcpkg_arch }}-windows-static-md libxml2:${{ matrix.vcpkg_arch }}-windows-static-md zlib:${{ matrix.vcpkg_arch }}-windows-static-md
         shell: cmd
 
       - name: Build wheels
@@ -249,7 +246,9 @@ jobs:
           IGRAPH_CMAKE_EXTRA_ARGS: -DCMAKE_BUILD_TYPE=RelWithDebInfo -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_arch }}-windows-static-md -DCMAKE_TOOLCHAIN_FILE=c:/vcpkg/scripts/buildsystems/vcpkg.cmake -A ${{ matrix.cmake_arch }}
           IGRAPH_EXTRA_LIBRARY_PATH: C:/vcpkg/installed/${{ matrix.vcpkg_arch }}-windows-static-md/lib/
           IGRAPH_STATIC_EXTENSION: True
-          IGRAPH_EXTRA_LIBRARIES: libxml2,lzma,zlib,iconv,charset,bcrypt
+          # vcpkg's Windows static zlib installs as zs.lib (not zlib.lib); see
+          # ports/zlib/portfile.cmake which rewrites pkg-config -lz to -lzs.
+          IGRAPH_EXTRA_LIBRARIES: libxml2,lzma,zs,iconv,charset,bcrypt
           IGRAPH_EXTRA_DYNAMIC_LIBRARIES: wsock32,ws2_32
 
       - uses: actions/upload-artifact@v4
