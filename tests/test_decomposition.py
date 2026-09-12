@@ -283,6 +283,9 @@ class CommunityTests(unittest.TestCase):
         self.assertAlmostEqual(cl.q, 0.4523, places=3)
 
     def testFluidCommunities(self):
+        set_random_number_generator(random.Random(0))
+        self.addCleanup(set_random_number_generator, random)
+
         # Test with a simple graph: two cliques connected by a single edge
         g = Graph.Full(5) + Graph.Full(5)
         g.add_edges([(0, 5)])
