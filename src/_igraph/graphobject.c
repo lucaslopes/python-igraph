@@ -13758,7 +13758,7 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
 
   static char *kwlist[] = {"edge_weights", "node_weights", "node_in_weights", "resolution",
                            "normalize_resolution", "beta", "max_memberships", "initial_membership", "n_iterations",
-                           "allow_isolation", "local_move_only", NULL};
+                           "allow_isolation", "local_move_only", "debug_trace", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
@@ -13766,8 +13766,11 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   PyObject *initial_membership_o = Py_None;
   PyObject *allow_isolation_o = Py_True;
   PyObject *local_move_only_o = Py_False;
+  PyObject *debug_trace_o = Py_False;
   PyObject *normalize_resolution = Py_False;
   PyObject *res = Py_None;
+  PyObject *move_trace_res = NULL;
+  PyObject *projection_trace_res = NULL;
 
   int error = 0;
   Py_ssize_t max_memberships = 1;
@@ -13780,23 +13783,32 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   igraph_bool_t memberships_valid = false;
   igraph_bool_t allow_isolation = true;
   igraph_bool_t local_move_only = false;
+  igraph_bool_t debug_trace = false;
+  igraph_bool_t diagnostic_traces_valid = false;
   igraph_bool_t start = true;
   igraph_bool_t overlapping;
   igraph_int_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
+  igraph_matrix_t move_trace, projection_trace;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdnOnOO", kwlist,
-        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &local_move_only_o))
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdnOnOOO", kwlist,
+        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &local_move_only_o, &debug_trace_o))
     return NULL;
 
   allow_isolation = PyObject_IsTrue(allow_isolation_o);
   local_move_only = PyObject_IsTrue(local_move_only_o);
+  debug_trace = PyObject_IsTrue(debug_trace_o);
 
   if (max_memberships < 1) {
     PyErr_SetString(PyExc_ValueError, "maximum number of memberships must be at least 1");
     return NULL;
   }
   overlapping = (max_memberships > 1);
+  if (debug_trace && !overlapping) {
+    PyErr_SetString(PyExc_ValueError,
+      "debug_trace is available only in overlapping Leiden mode");
+    return NULL;
+  }
   if (overlapping && PyObject_IsTrue(normalize_resolution)) {
     PyErr_SetString(PyExc_ValueError,
       "resolution normalization is not supported for overlapping Leiden");
@@ -13903,15 +13915,28 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
 
   /* Run actual Leiden algorithm for several iterations. */
   if (!error) {
-    error = igraph_community_leiden(&self->g,
-                                    edge_weights, node_weights, node_in_weights,
-                                    resolution, beta,
-                                    (igraph_int_t)max_memberships,
-                                    start, (igraph_int_t)n_iterations,
-                                    allow_isolation, local_move_only,
-                                    overlapping ? NULL : membership,
-                                    overlapping ? &memberships : NULL,
-                                    &nb_clusters, &quality);
+    if (debug_trace) {
+      error = igraph_community_leiden_with_diagnostics(
+                                      &self->g,
+                                      edge_weights, node_weights, node_in_weights,
+                                      resolution, beta,
+                                      (igraph_int_t)max_memberships,
+                                      start, (igraph_int_t)n_iterations,
+                                      allow_isolation, local_move_only,
+                                      &memberships, &nb_clusters, &quality,
+                                      &move_trace, &projection_trace);
+      diagnostic_traces_valid = !error;
+    } else {
+      error = igraph_community_leiden(&self->g,
+                                      edge_weights, node_weights, node_in_weights,
+                                      resolution, beta,
+                                      (igraph_int_t)max_memberships,
+                                      start, (igraph_int_t)n_iterations,
+                                      allow_isolation, local_move_only,
+                                      overlapping ? NULL : membership,
+                                      overlapping ? &memberships : NULL,
+                                      &nb_clusters, &quality);
+    }
     if (error) igraphmodule_handle_igraph_error();
   }
 
@@ -13946,7 +13971,32 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     igraph_vector_int_list_destroy(&memberships);
   }
 
-  return error ? NULL : Py_BuildValue("Nnd", res, (Py_ssize_t) nb_clusters, (double)quality);
+  if (error || res == NULL) {
+    if (diagnostic_traces_valid) {
+      igraph_matrix_destroy(&projection_trace);
+      igraph_matrix_destroy(&move_trace);
+    }
+    return NULL;
+  }
+  if (!debug_trace) {
+    return Py_BuildValue("Nnd", res, (Py_ssize_t) nb_clusters, (double)quality);
+  }
+
+  move_trace_res = igraphmodule_matrix_t_to_PyList(
+      &move_trace, IGRAPHMODULE_TYPE_FLOAT);
+  projection_trace_res = igraphmodule_matrix_t_to_PyList(
+      &projection_trace, IGRAPHMODULE_TYPE_FLOAT);
+  igraph_matrix_destroy(&projection_trace);
+  igraph_matrix_destroy(&move_trace);
+  if (move_trace_res == NULL || projection_trace_res == NULL) {
+    Py_XDECREF(projection_trace_res);
+    Py_XDECREF(move_trace_res);
+    Py_DECREF(res);
+    return NULL;
+  }
+
+  return Py_BuildValue("NndNN", res, (Py_ssize_t) nb_clusters, (double)quality,
+                       move_trace_res, projection_trace_res);
 }
 
  /**

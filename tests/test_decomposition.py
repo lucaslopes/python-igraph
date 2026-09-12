@@ -281,56 +281,56 @@ class CommunityTests(unittest.TestCase):
         cl = g.community_leading_eigenvector(2)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
         self.assertAlmostEqual(cl.q, 0.4523, places=3)
-        
+
     def testFluidCommunities(self):
         # Test with a simple graph: two cliques connected by a single edge
         g = Graph.Full(5) + Graph.Full(5)
         g.add_edges([(0, 5)])
-        
+
         # Test basic functionality - should find 2 communities
         cl = g.community_fluid_communities(2)
         self.assertEqual(len(set(cl.membership)), 2)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
-        
+
         # Test with 3 cliques
         g = Graph.Full(4) + Graph.Full(4) + Graph.Full(4)
         g += [(0, 4), (4, 8)]  # Connect the cliques
         cl = g.community_fluid_communities(3)
         self.assertEqual(len(set(cl.membership)), 3)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
-        
+
         # Test error conditions
         # Number of communities must be positive
         with self.assertRaises(Exception):
             g.community_fluid_communities(0)
-        
+
         # Number of communities cannot exceed number of vertices
         with self.assertRaises(Exception):
             g.community_fluid_communities(g.vcount() + 1)
-        
+
         # Test with disconnected graph (should raise error)
         g_disconnected = Graph.Full(3) + Graph.Full(3)  # No connecting edge
         with self.assertRaises(Exception):
             g_disconnected.community_fluid_communities(2)
-        
+
         # Test with single vertex (edge case)
         g_single = Graph(1)
         cl = g_single.community_fluid_communities(1)
         self.assertEqual(cl.membership, [0])
-        
+
         # Test with small connected graph
         g_small = Graph([(0, 1), (1, 2), (2, 0)])  # Triangle
         cl = g_small.community_fluid_communities(1)
         self.assertEqual(len(set(cl.membership)), 1)
         self.assertEqual(cl.membership, [0, 0, 0])
-        
+
         # Test deterministic behavior on simple structure
         # Note: Fluid communities can be non-deterministic due to randomization,
         # but on very simple structures it should be consistent
         g_path = Graph([(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)])
         cl = g_path.community_fluid_communities(2)
         self.assertEqual(len(set(cl.membership)), 2)
-        
+
         # Test that it returns a VertexClustering object
         g = Graph.Full(6)
         cl = g.community_fluid_communities(2)
@@ -539,7 +539,7 @@ class CommunityTests(unittest.TestCase):
                 ok = True
                 break
         self.assertTrue(ok)
-        
+
     def testVoronoi(self):
         # Test 1: Two disconnected cliques - should find exactly 2 communities
         g = Graph.Full(5) + Graph.Full(5)  # Two separate complete graphs
@@ -650,6 +650,11 @@ class CommunityTests(unittest.TestCase):
 
         leiden_signature = signature(g.community_leiden)
         self.assertIn("local_move_only", leiden_signature.parameters)
+        self.assertIn("debug_trace", leiden_signature.parameters)
+        self.assertLess(
+            list(leiden_signature.parameters).index("node_weights"),
+            list(leiden_signature.parameters).index("debug_trace"),
+        )
         old_keyword = "_".join(("only", "local", "moving"))
         self.assertNotIn(old_keyword, leiden_signature.parameters)
 
@@ -810,6 +815,115 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertAlmostEqual(quality_after, quality_before, places=12)
 
+    def testLeidenOverlappingDiagnosticTrace(self):
+        from igraph._igraph import GraphBase
+
+        g = Graph(
+            n=11,
+            edges=[
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (0, 4),
+                (1, 2),
+                (1, 3),
+                (1, 4),
+                (2, 3),
+                (2, 4),
+                (3, 4),
+                (5, 6),
+                (5, 7),
+                (5, 8),
+                (5, 9),
+                (6, 7),
+                (6, 8),
+                (6, 9),
+                (7, 8),
+                (7, 9),
+                (8, 9),
+                (10, 0),
+                (10, 1),
+                (10, 2),
+                (10, 5),
+                (10, 6),
+                (10, 7),
+            ],
+        )
+        set_random_number_generator(random.Random(20260912))
+        cover = g.community_leiden(
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=2,
+            local_move_only=False,
+            debug_trace=True,
+        )
+        trace = cover._params["debug_trace"]
+        self.assertEqual(trace["schema_version"], 1)
+        self.assertGreater(len(trace["moves"]), 0)
+        self.assertGreater(len(trace["projections"]), 0)
+
+        for move in trace["moves"]:
+            self.assertGreater(move["predicted_delta"], 0.0)
+            self.assertGreater(move["direct_delta"], 0.0)
+            self.assertLessEqual(move["abs_error"], move["tolerance"])
+            self.assertGreaterEqual(move["quality_after"], move["quality_before"])
+            self.assertIsInstance(move["sequence"], int)
+
+        for projection in trace["projections"]:
+            self.assertGreater(projection["original_weight"], 0.0)
+            self.assertGreater(projection["token_weight"], 0.0)
+            self.assertGreaterEqual(projection["token_count"], g.vcount())
+            self.assertGreaterEqual(projection["token_edge_count"], g.ecount())
+            self.assertGreaterEqual(projection["collision_count"], 0)
+            self.assertLessEqual(projection["token_identity_abs_error"], 1e-12)
+            expected = (
+                projection["quality_projected"]
+                if projection["accepted"]
+                else projection["quality_before"]
+            )
+            self.assertAlmostEqual(projection["quality_committed"], expected)
+            self.assertGreaterEqual(
+                projection["quality_committed"] + 1e-12,
+                projection["quality_before"],
+            )
+        self.assertGreater(
+            max(row["collision_count"] for row in trace["projections"]), 0
+        )
+        self.assertTrue(any(row["accepted"] for row in trace["projections"]))
+        self.assertTrue(any(not row["accepted"] for row in trace["projections"]))
+
+        raw = GraphBase.community_leiden(
+            g,
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=0,
+            debug_trace=True,
+        )
+        self.assertEqual(len(raw), 5)
+        self.assertEqual(raw[3], [])
+        self.assertEqual(raw[4], [])
+
+        for _ in range(3):
+            with self.assertRaises(InternalError):
+                GraphBase.community_leiden(
+                    g,
+                    max_memberships=3,
+                    resolution=math.nan,
+                    n_iterations=1,
+                    debug_trace=True,
+                )
+        recovered = GraphBase.community_leiden(
+            g,
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=0,
+            debug_trace=True,
+        )
+        self.assertEqual(len(recovered), 5)
+
+        with self.assertRaises(ValueError):
+            g.community_leiden(max_memberships=1, debug_trace=True)
+
     @unittest.skipUnless(hasattr(signal, "SIGALRM"), "requires POSIX SIGALRM")
     def testLeidenOverlappingInterruptsAndRecoversInSubprocess(self):
         cases = {
@@ -879,7 +993,6 @@ class CommunityTests(unittest.TestCase):
                 0,
                 msg=f"{name}: stdout={completed.stdout!r} stderr={completed.stderr!r}",
             )
-
 
 
 class CohesiveBlocksTests(unittest.TestCase):

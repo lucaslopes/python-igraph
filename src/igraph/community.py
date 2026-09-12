@@ -359,7 +359,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
       distances from generator points. If C{"out"} (the default), distances
       from generator points to all other nodes are considered following the
       direction of edges. If C{"in"}, distances are computed in the reverse
-      direction (i.e., from all nodes to generator points). If C{"all"}, 
+      direction (i.e., from all nodes to generator points). If C{"all"},
       edge directions are ignored and the graph is treated as undirected.
       This parameter is ignored for undirected graphs.
     @param radius: the radius/resolution to use when selecting generator points.
@@ -375,7 +375,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
             mode = mode_map[mode.lower()]
         else:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: out, in, all")
-    
+
     membership, generators, modularity = GraphBase.community_voronoi(graph, lengths, weights, mode, radius)
 
     params = {"generators": generators}
@@ -454,6 +454,58 @@ def _k_core(graph, *args):
     return result
 
 
+_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS = (
+    "sequence",
+    "stage",
+    "vertex",
+    "cardinality_before",
+    "cardinality_after",
+    "predicted_delta",
+    "direct_delta",
+    "abs_error",
+    "tolerance",
+    "quality_before",
+    "quality_after",
+    "original_weight",
+)
+
+_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS = (
+    "iteration",
+    "original_weight",
+    "token_weight",
+    "quality_before",
+    "quality_after_local",
+    "original_unnormalized",
+    "token_initial_quality",
+    "token_initial_unnormalized",
+    "token_identity_abs_error",
+    "token_final_quality",
+    "token_count",
+    "token_edge_count",
+    "collision_count",
+    "quality_projected",
+    "accepted",
+    "quality_committed",
+    "local_changed",
+    "token_changed",
+    "dedup_changed",
+)
+
+
+def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_columns=()):
+    result = []
+    integer_columns = set(integer_columns)
+    boolean_columns = set(boolean_columns)
+    for row in rows:
+        record = dict(zip(columns, row))
+        for name in integer_columns:
+            record[name] = int(record[name])
+        for name in boolean_columns:
+            record[name] = bool(record[name])
+        result.append(record)
+    return result
+
+
 def _community_leiden(
     graph,
     objective_function="CPM",
@@ -466,6 +518,7 @@ def _community_leiden(
     allow_isolation=True,
     local_move_only=False,
     node_weights=None,
+    debug_trace=False,
     **kwds,
 ):
     """Finds the community structure of the graph using the Leiden
@@ -524,6 +577,10 @@ def _community_leiden(
       basis of whether you want to use CPM or modularity (disjoint mode).
       If you do provide this, please make sure that you understand what you
       are doing. Overlapping node weights must be finite and non-negative.
+    @param debug_trace: if true in overlapping mode, recompute every accepted
+      original-space move directly and record accepted-move and token-projection
+      diagnostics in C{result._params["debug_trace"]}. This validation path is
+      intentionally expensive and is intended only for bounded fixtures.
     @return: a L{VertexClustering} when C{max_memberships == 1}, or a
       L{VertexCover} when C{max_memberships > 1}. The clustering carries a
       C{quality} parameter with the internal quality of the result.
@@ -554,6 +611,8 @@ def _community_leiden(
             raise ValueError(
                 "beta must be finite and non-negative in overlapping mode."
             )
+    elif debug_trace:
+        raise ValueError("debug_trace is available only in overlapping Leiden mode")
 
     if "resolution_parameter" in kwds:
         deprecated(
@@ -594,7 +653,7 @@ def _community_leiden(
         )
 
     # Overlapping mode: max_memberships > 1
-    memberships, nb_clusters, quality = GraphBase.community_leiden(
+    raw_result = GraphBase.community_leiden(
         graph,
         edge_weights=weights,
         node_weights=node_weights,
@@ -606,7 +665,12 @@ def _community_leiden(
         n_iterations=n_iterations,
         allow_isolation=allow_isolation,
         local_move_only=local_move_only,
+        debug_trace=debug_trace,
     )
+    if debug_trace:
+        memberships, nb_clusters, quality, move_rows, projection_rows = raw_result
+    else:
+        memberships, nb_clusters, quality = raw_result
 
     clusters = [[] for _ in range(nb_clusters)]
     for v, comms in enumerate(memberships):
@@ -615,6 +679,39 @@ def _community_leiden(
 
     cover = VertexCover(graph, clusters)
     cover._params = {"quality": quality}
+    if debug_trace:
+        cover._params["debug_trace"] = {
+            "schema_version": 1,
+            "move_columns": list(_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS),
+            "moves": _format_leiden_trace_rows(
+                _LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS,
+                move_rows,
+                integer_columns={
+                    "sequence",
+                    "stage",
+                    "vertex",
+                    "cardinality_before",
+                    "cardinality_after",
+                },
+            ),
+            "projection_columns": list(_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS),
+            "projections": _format_leiden_trace_rows(
+                _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS,
+                projection_rows,
+                integer_columns={
+                    "iteration",
+                    "token_count",
+                    "token_edge_count",
+                    "collision_count",
+                },
+                boolean_columns={
+                    "accepted",
+                    "local_changed",
+                    "token_changed",
+                    "dedup_changed",
+                },
+            ),
+        }
     return cover
 
 
@@ -622,9 +719,9 @@ def _community_leiden(
 def _community_fluid_communities(graph, no_of_communities):
     """Community detection based on fluids interacting on the graph.
 
-    The algorithm is based on the simple idea of several fluids interacting 
-    in a non-homogeneous environment (the graph topology), expanding and 
-    contracting based on their interaction and density. Weighted graphs are 
+    The algorithm is based on the simple idea of several fluids interacting
+    in a non-homogeneous environment (the graph topology), expanding and
+    contracting based on their interaction and density. Weighted graphs are
     not supported.
 
     This function implements the community detection method described in:
@@ -638,14 +735,14 @@ def _community_fluid_communities(graph, no_of_communities):
     # Validate input parameters
     if no_of_communities <= 0:
         raise ValueError("no_of_communities must be greater than 0")
-    
+
     if no_of_communities > graph.vcount():
         raise ValueError("no_of_communities must be fewer than or equal to the number of vertices")
-    
+
     # Check if graph is weighted (not supported)
     if graph.is_weighted():
         raise ValueError("Weighted graphs are not supported by the fluid communities algorithm")
-    
+
     # Handle directed graphs - the algorithm works on undirected graphs
     # but can accept directed graphs (they are treated as undirected)
     if graph.is_directed():
@@ -655,11 +752,11 @@ def _community_fluid_communities(graph, no_of_communities):
             UserWarning,
             stacklevel=2
         )
-    
+
     membership = GraphBase.community_fluid_communities(graph, no_of_communities)
     return VertexClustering(graph, membership)
-  
-  
+
+
 def _modularity(self, membership, weights=None, resolution=1, directed=True):
     """Calculates the modularity score of the graph with respect to a given
     clustering.

@@ -6,6 +6,9 @@
 
 - Updated the vendored C igraph revision with explicit overlapping CPM input,
   overflow, positive-budget projection, and interruption contracts.
+- Added the opt-in overlapping `debug_trace` validation path. It records
+  direct-versus-predicted accepted-move deltas, separate original/token
+  normalization, token counts, projection collisions, and guard decisions.
 - Overlapping Leiden now rejects directed, looped, zero-total-weight, nonfinite,
   and negative-weight inputs outside its documented unit-l2 CPM domain.
 
