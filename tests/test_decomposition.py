@@ -811,6 +811,7 @@ class CommunityTests(unittest.TestCase):
             g, n_iterations=0, **common
         )
         set_random_number_generator(random.Random(1452719858))
+        self.addCleanup(set_random_number_generator, random)
         after, _, quality_after = GraphBase.community_leiden(
             g, n_iterations=1, **common
         )
@@ -853,6 +854,7 @@ class CommunityTests(unittest.TestCase):
             ],
         )
         set_random_number_generator(random.Random(20260912))
+        self.addCleanup(set_random_number_generator, random)
         cover = g.community_leiden(
             max_memberships=3,
             resolution=0.2,
