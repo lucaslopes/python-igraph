@@ -6,6 +6,7 @@ include src/_igraph/*.h
 include MANIFEST.in
 include scripts/*.sh
 include scripts/*.py
+include etc/lsan-suppr.txt
 include tests/*.py
 
 include CHANGELOG.md
