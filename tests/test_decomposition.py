@@ -942,7 +942,9 @@ class CommunityTests(unittest.TestCase):
                 delay = 0.01
             """,
             "token": """
-                graph = ig.Graph.Full(300)
+                # Keep the token projection in flight long enough for the
+                # short alarm to exercise native interruption on fast runners.
+                graph = ig.Graph.Full(600)
                 kwargs = dict(
                     max_memberships=2,
                     initial_membership=[[0, 1] for _ in range(graph.vcount())],
