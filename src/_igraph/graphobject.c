@@ -13797,6 +13797,16 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     return NULL;
   }
   overlapping = (max_memberships > 1);
+  if (overlapping && PyObject_IsTrue(normalize_resolution)) {
+    PyErr_SetString(PyExc_ValueError,
+      "resolution normalization is not supported for overlapping Leiden");
+    return NULL;
+  }
+  if (overlapping && node_in_weights_o != Py_None) {
+    PyErr_SetString(PyExc_ValueError,
+      "node in-weights are not supported for undirected overlapping Leiden");
+    return NULL;
+  }
 
   if (n_iterations >= 0) {
     CHECK_SSIZE_T_RANGE(n_iterations, "number of iterations");

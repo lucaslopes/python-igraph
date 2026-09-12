@@ -1,5 +1,22 @@
 # igraph Python interface changelog
 
+## [1.0.0.4] - 2026-09-12
+
+### Changed
+
+- Updated the vendored C igraph revision with explicit overlapping CPM input,
+  overflow, positive-budget projection, and interruption contracts.
+- Overlapping Leiden now rejects directed, looped, zero-total-weight, nonfinite,
+  and negative-weight inputs outside its documented unit-l2 CPM domain.
+
+### Fixed
+
+- Fixed stale and uninitialized integer-vector destruction when malformed
+  nested memberships are converted by the public GraphBase binding.
+- Preserved original-space quality across positive-budget token projections
+  and made incidence-list, local-moving, and token-construction interruption
+  unwind their registered resources safely.
+
 ## [1.0.0.3] - 2026-08-24
 
 ### Changed

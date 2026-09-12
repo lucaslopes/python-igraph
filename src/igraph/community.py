@@ -1,3 +1,5 @@
+import math
+
 from igraph._igraph import GraphBase
 from igraph.clustering import VertexDendrogram, VertexClustering
 from igraph.utils import deprecated
@@ -483,18 +485,19 @@ def _community_leiden(
 
     @param objective_function: whether to use the Constant Potts
       Model (CPM) or modularity. Must be either C{"CPM"} or C{"modularity"}.
-      Only used in disjoint mode (C{max_memberships == 1}); overlapping mode
-      always optimizes the overlapping CPM.
+      Overlapping mode (C{max_memberships > 1}) requires C{"CPM"}.
     @param weights: edge weights to be used. Can be a sequence or
-      iterable or even an edge attribute name.
+      iterable or even an edge attribute name. In overlapping mode they must
+      be finite and non-negative, with positive finite total weight.
     @param resolution: the resolution parameter to use. Higher resolutions
       lead to more smaller communities, while lower resolutions lead to fewer
-      larger communities.
+      larger communities. It must be finite in overlapping mode.
     @param beta: parameter affecting the randomness in the Leiden
-      algorithm. This affects only the refinement step of the algorithm.
+      algorithm. This affects only the refinement step of the algorithm. It
+      must be finite and non-negative in overlapping mode.
     @param max_memberships: maximum number of communities a vertex may
       belong to. C{1} selects disjoint Leiden; values greater than 1 select
-      overlapping Leiden-CPM.
+      overlapping Leiden-CPM and must not exceed the vertex count.
     @param initial_membership: if provided, the Leiden algorithm
       will try to improve this provided membership/cover. In disjoint mode
       this is a flat community-id sequence; in overlapping mode it is a list
@@ -503,8 +506,10 @@ def _community_leiden(
     @param n_iterations: the number of iterations to iterate the Leiden
       algorithm. Each iteration may improve the partition further. Using
       a negative number of iterations will run until a stable iteration is
-      encountered (i.e. the quality was not increased during that
-      iteration).
+      encountered and then request a complete tolerance-level response sweep.
+      Positive overlapping multilevel budgets may stop before that sweep, but
+      each projected iteration is retained only when original-space quality
+      improves beyond the numerical margin.
     @param allow_isolation: If true, nodes are allowed to move to empty
       communities, effectively creating new clusters. If false, nodes
       can only move to existing non-empty communities, preventing the
@@ -518,7 +523,7 @@ def _community_leiden(
       If this is not provided, it will be automatically determined on the
       basis of whether you want to use CPM or modularity (disjoint mode).
       If you do provide this, please make sure that you understand what you
-      are doing.
+      are doing. Overlapping node weights must be finite and non-negative.
     @return: a L{VertexClustering} when C{max_memberships == 1}, or a
       L{VertexCover} when C{max_memberships > 1}. The clustering carries a
       C{quality} parameter with the internal quality of the result.
@@ -527,6 +532,28 @@ def _community_leiden(
 
     if max_memberships < 1:
         raise ValueError("max_memberships must be at least 1.")
+
+    if max_memberships > 1:
+        if objective_function.lower() != "cpm":
+            raise ValueError('overlapping Leiden supports objective_function="CPM" only.')
+        if graph.is_directed():
+            raise ValueError("overlapping Leiden requires an undirected graph.")
+        if graph.vcount() < 1 or graph.ecount() < 1:
+            raise ValueError(
+                "overlapping Leiden requires a nonempty graph with at least one edge."
+            )
+        if any(graph.is_loop()):
+            raise ValueError("overlapping Leiden requires a loopless graph.")
+        if max_memberships > graph.vcount():
+            raise ValueError(
+                "max_memberships must not exceed the vertex count in overlapping mode."
+            )
+        if not math.isfinite(resolution):
+            raise ValueError("resolution must be finite in overlapping mode.")
+        if not math.isfinite(beta) or beta < 0:
+            raise ValueError(
+                "beta must be finite and non-negative in overlapping mode."
+            )
 
     if "resolution_parameter" in kwds:
         deprecated(
