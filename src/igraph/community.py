@@ -1,3 +1,5 @@
+import math
+
 from igraph._igraph import GraphBase
 from igraph.clustering import VertexDendrogram, VertexClustering
 from igraph.utils import deprecated
@@ -357,7 +359,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
       distances from generator points. If C{"out"} (the default), distances
       from generator points to all other nodes are considered following the
       direction of edges. If C{"in"}, distances are computed in the reverse
-      direction (i.e., from all nodes to generator points). If C{"all"}, 
+      direction (i.e., from all nodes to generator points). If C{"all"},
       edge directions are ignored and the graph is treated as undirected.
       This parameter is ignored for undirected graphs.
     @param radius: the radius/resolution to use when selecting generator points.
@@ -373,7 +375,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
             mode = mode_map[mode.lower()]
         else:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: out, in, all")
-    
+
     membership, generators, modularity = GraphBase.community_voronoi(graph, lengths, weights, mode, radius)
 
     params = {"generators": generators}
@@ -452,20 +454,83 @@ def _k_core(graph, *args):
     return result
 
 
+_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS = (
+    "sequence",
+    "stage",
+    "vertex",
+    "cardinality_before",
+    "cardinality_after",
+    "predicted_delta",
+    "direct_delta",
+    "abs_error",
+    "tolerance",
+    "quality_before",
+    "quality_after",
+    "original_weight",
+)
+
+_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS = (
+    "iteration",
+    "original_weight",
+    "token_weight",
+    "quality_before",
+    "quality_after_local",
+    "original_unnormalized",
+    "token_initial_quality",
+    "token_initial_unnormalized",
+    "token_identity_abs_error",
+    "token_final_quality",
+    "token_count",
+    "token_edge_count",
+    "collision_count",
+    "quality_projected",
+    "accepted",
+    "quality_committed",
+    "local_changed",
+    "token_changed",
+    "dedup_changed",
+)
+
+
+def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_columns=()):
+    result = []
+    integer_columns = set(integer_columns)
+    boolean_columns = set(boolean_columns)
+    for row in rows:
+        record = dict(zip(columns, row))
+        for name in integer_columns:
+            record[name] = int(record[name])
+        for name in boolean_columns:
+            record[name] = bool(record[name])
+        result.append(record)
+    return result
+
+
 def _community_leiden(
     graph,
     objective_function="CPM",
     weights=None,
     resolution=1.0,
     beta=0.01,
+    max_memberships=1,
     initial_membership=None,
     n_iterations=2,
+    allow_isolation=True,
+    local_move_only=False,
     node_weights=None,
-    node_in_weights=None,
+    debug_trace=False,
     **kwds,
 ):
     """Finds the community structure of the graph using the Leiden
     algorithm of Traag, van Eck & Waltman.
+
+    Mode is selected by C{max_memberships}:
+
+      - C{max_memberships == 1} (default): classical disjoint Leiden;
+        returns a L{VertexClustering}.
+      - C{max_memberships > 1}: overlapping Leiden-CPM; each vertex may
+        belong to up to C{max_memberships} communities and the result is
+        a L{VertexCover}.
 
     B{Reference}: Traag, V. A., Waltman, L., & van Eck, N. J. (2019). From Louvain
     to Leiden: guaranteeing well-connected communities. I{Scientific Reports},
@@ -473,36 +538,81 @@ def _community_leiden(
 
     @param objective_function: whether to use the Constant Potts
       Model (CPM) or modularity. Must be either C{"CPM"} or C{"modularity"}.
+      Overlapping mode (C{max_memberships > 1}) requires C{"CPM"}.
     @param weights: edge weights to be used. Can be a sequence or
-      iterable or even an edge attribute name.
+      iterable or even an edge attribute name. In overlapping mode they must
+      be finite and non-negative, with positive finite total weight.
     @param resolution: the resolution parameter to use. Higher resolutions
       lead to more smaller communities, while lower resolutions lead to fewer
-      larger communities.
+      larger communities. It must be finite in overlapping mode.
     @param beta: parameter affecting the randomness in the Leiden
-      algorithm. This affects only the refinement step of the algorithm.
+      algorithm. This affects only the refinement step of the algorithm. It
+      must be finite and non-negative in overlapping mode.
+    @param max_memberships: maximum number of communities a vertex may
+      belong to. C{1} selects disjoint Leiden; values greater than 1 select
+      overlapping Leiden-CPM and must not exceed the vertex count.
     @param initial_membership: if provided, the Leiden algorithm
-      will try to improve this provided membership. If no argument is
-      provided, the aglorithm simply starts from the singleton partition.
+      will try to improve this provided membership/cover. In disjoint mode
+      this is a flat community-id sequence; in overlapping mode it is a list
+      of community-id lists, one per vertex. If no argument is provided, the
+      algorithm simply starts from the singleton partition/cover.
     @param n_iterations: the number of iterations to iterate the Leiden
       algorithm. Each iteration may improve the partition further. Using
       a negative number of iterations will run until a stable iteration is
-      encountered (i.e. the quality was not increased during that
-      iteration).
+      encountered and then request a complete tolerance-level response sweep.
+      Positive overlapping multilevel budgets may stop before that sweep, but
+      each projected iteration is retained only when original-space quality
+      improves beyond the numerical margin.
+    @param allow_isolation: If true, nodes are allowed to move to empty
+      communities, effectively creating new clusters. If false, nodes
+      can only move to existing non-empty communities, preventing the
+      formation of new clusters.
+    @param local_move_only: if true, only the local moving phase (phase 1)
+      of the Leiden algorithm is executed. This skips the refinement phase
+      (phase 2) and the aggregation phase (phase 3), resulting in a faster
+      but potentially lower quality clustering. If false, the complete
+      three-phase Leiden algorithm is executed.
     @param node_weights: the node weights used in the Leiden algorithm.
       If this is not provided, it will be automatically determined on the
-      basis of whether you want to use CPM or modularity. If you do provide
-      this, please make sure that you understand what you are doing.
-    @param node_in_weights: the inbound node weights used in the directed
-      variant of the Leiden algorithm. If this is not provided, it will be
-      automatically determined on the basis of whether you want to use CPM or
-      modularity. If you do provide this, please make sure that you understand
-      what you are doing.
-    @return: an appropriate L{VertexClustering} object with an extra attribute
-      called C{quality} that stores the value of the internal quality function
-      optimized by the algorithm.
+      basis of whether you want to use CPM or modularity (disjoint mode).
+      If you do provide this, please make sure that you understand what you
+      are doing. Overlapping node weights must be finite and non-negative.
+    @param debug_trace: if true in overlapping mode, recompute every accepted
+      original-space move directly and record accepted-move and token-projection
+      diagnostics in C{result._params["debug_trace"]}. This validation path is
+      intentionally expensive and is intended only for bounded fixtures.
+    @return: a L{VertexClustering} when C{max_memberships == 1}, or a
+      L{VertexCover} when C{max_memberships > 1}. The clustering carries a
+      C{quality} parameter with the internal quality of the result.
     """
-    if objective_function.lower() not in ("cpm", "modularity"):
-        raise ValueError('objective_function must be "CPM" or "modularity".')
+    from igraph.clustering import VertexCover
+
+    if max_memberships < 1:
+        raise ValueError("max_memberships must be at least 1.")
+
+    if max_memberships > 1:
+        if objective_function.lower() != "cpm":
+            raise ValueError('overlapping Leiden supports objective_function="CPM" only.')
+        if graph.is_directed():
+            raise ValueError("overlapping Leiden requires an undirected graph.")
+        if graph.vcount() < 1 or graph.ecount() < 1:
+            raise ValueError(
+                "overlapping Leiden requires a nonempty graph with at least one edge."
+            )
+        if any(graph.is_loop()):
+            raise ValueError("overlapping Leiden requires a loopless graph.")
+        if max_memberships > graph.vcount():
+            raise ValueError(
+                "max_memberships must not exceed the vertex count in overlapping mode."
+            )
+        if not math.isfinite(resolution):
+            raise ValueError("resolution must be finite in overlapping mode.")
+        if not math.isfinite(beta) or beta < 0:
+            raise ValueError(
+                "beta must be finite and non-negative in overlapping mode."
+            )
+    elif debug_trace:
+        raise ValueError("debug_trace is available only in overlapping Leiden mode")
 
     if "resolution_parameter" in kwds:
         deprecated(
@@ -514,35 +624,104 @@ def _community_leiden(
     if kwds:
         raise TypeError("unexpected keyword argument")
 
-    membership, quality = GraphBase.community_leiden(
+    if max_memberships == 1:
+        if objective_function.lower() not in ("cpm", "modularity"):
+            raise ValueError('objective_function must be "CPM" or "modularity".')
+
+        membership, quality = GraphBase.community_leiden(
+            graph,
+            edge_weights=weights,
+            node_weights=node_weights,
+            resolution=resolution,
+            normalize_resolution=(objective_function.lower() == "modularity"),
+            beta=beta,
+            max_memberships=1,
+            initial_membership=initial_membership,
+            n_iterations=n_iterations,
+            allow_isolation=allow_isolation,
+            local_move_only=local_move_only,
+        )
+
+        params = {"quality": quality}
+
+        modularity_params = {"resolution": resolution}
+        if weights is not None:
+            modularity_params["weights"] = weights
+
+        return VertexClustering(
+            graph, membership, params=params, modularity_params=modularity_params
+        )
+
+    # Overlapping mode: max_memberships > 1
+    raw_result = GraphBase.community_leiden(
         graph,
         edge_weights=weights,
         node_weights=node_weights,
-        node_in_weights=node_in_weights,
         resolution=resolution,
-        normalize_resolution=(objective_function == "modularity"),
+        normalize_resolution=False,
         beta=beta,
+        max_memberships=max_memberships,
         initial_membership=initial_membership,
         n_iterations=n_iterations,
+        allow_isolation=allow_isolation,
+        local_move_only=local_move_only,
+        debug_trace=debug_trace,
     )
+    if debug_trace:
+        memberships, nb_clusters, quality, move_rows, projection_rows = raw_result
+    else:
+        memberships, nb_clusters, quality = raw_result
 
-    params = {"quality": quality}
+    clusters = [[] for _ in range(nb_clusters)]
+    for v, comms in enumerate(memberships):
+        for c in comms:
+            clusters[c].append(v)
 
-    modularity_params = {"resolution": resolution}
-    if weights is not None:
-        modularity_params["weights"] = weights
+    cover = VertexCover(graph, clusters)
+    cover._params = {"quality": quality}
+    if debug_trace:
+        cover._params["debug_trace"] = {
+            "schema_version": 1,
+            "move_columns": list(_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS),
+            "moves": _format_leiden_trace_rows(
+                _LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS,
+                move_rows,
+                integer_columns={
+                    "sequence",
+                    "stage",
+                    "vertex",
+                    "cardinality_before",
+                    "cardinality_after",
+                },
+            ),
+            "projection_columns": list(_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS),
+            "projections": _format_leiden_trace_rows(
+                _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS,
+                projection_rows,
+                integer_columns={
+                    "iteration",
+                    "token_count",
+                    "token_edge_count",
+                    "collision_count",
+                },
+                boolean_columns={
+                    "accepted",
+                    "local_changed",
+                    "token_changed",
+                    "dedup_changed",
+                },
+            ),
+        }
+    return cover
 
-    return VertexClustering(
-        graph, membership, params=params, modularity_params=modularity_params
-    )
 
 
 def _community_fluid_communities(graph, no_of_communities):
     """Community detection based on fluids interacting on the graph.
 
-    The algorithm is based on the simple idea of several fluids interacting 
-    in a non-homogeneous environment (the graph topology), expanding and 
-    contracting based on their interaction and density. Weighted graphs are 
+    The algorithm is based on the simple idea of several fluids interacting
+    in a non-homogeneous environment (the graph topology), expanding and
+    contracting based on their interaction and density. Weighted graphs are
     not supported.
 
     This function implements the community detection method described in:
@@ -556,14 +735,14 @@ def _community_fluid_communities(graph, no_of_communities):
     # Validate input parameters
     if no_of_communities <= 0:
         raise ValueError("no_of_communities must be greater than 0")
-    
+
     if no_of_communities > graph.vcount():
         raise ValueError("no_of_communities must be fewer than or equal to the number of vertices")
-    
+
     # Check if graph is weighted (not supported)
     if graph.is_weighted():
         raise ValueError("Weighted graphs are not supported by the fluid communities algorithm")
-    
+
     # Handle directed graphs - the algorithm works on undirected graphs
     # but can accept directed graphs (they are treated as undirected)
     if graph.is_directed():
@@ -573,11 +752,11 @@ def _community_fluid_communities(graph, no_of_communities):
             UserWarning,
             stacklevel=2
         )
-    
+
     membership = GraphBase.community_fluid_communities(graph, no_of_communities)
     return VertexClustering(graph, membership)
-  
-  
+
+
 def _modularity(self, membership, weights=None, resolution=1, directed=True):
     """Calculates the modularity score of the graph with respect to a given
     clustering.

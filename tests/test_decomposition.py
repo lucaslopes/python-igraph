@@ -1,5 +1,10 @@
 import math
+import os
 import random
+import signal
+import subprocess
+import sys
+import textwrap
 import unittest
 
 from igraph import (
@@ -276,56 +281,59 @@ class CommunityTests(unittest.TestCase):
         cl = g.community_leading_eigenvector(2)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
         self.assertAlmostEqual(cl.q, 0.4523, places=3)
-        
+
     def testFluidCommunities(self):
+        set_random_number_generator(random.Random(0))
+        self.addCleanup(set_random_number_generator, random)
+
         # Test with a simple graph: two cliques connected by a single edge
         g = Graph.Full(5) + Graph.Full(5)
         g.add_edges([(0, 5)])
-        
+
         # Test basic functionality - should find 2 communities
         cl = g.community_fluid_communities(2)
         self.assertEqual(len(set(cl.membership)), 2)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
-        
+
         # Test with 3 cliques
         g = Graph.Full(4) + Graph.Full(4) + Graph.Full(4)
         g += [(0, 4), (4, 8)]  # Connect the cliques
         cl = g.community_fluid_communities(3)
         self.assertEqual(len(set(cl.membership)), 3)
         self.assertMembershipsEqual(cl, [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
-        
+
         # Test error conditions
         # Number of communities must be positive
         with self.assertRaises(Exception):
             g.community_fluid_communities(0)
-        
+
         # Number of communities cannot exceed number of vertices
         with self.assertRaises(Exception):
             g.community_fluid_communities(g.vcount() + 1)
-        
+
         # Test with disconnected graph (should raise error)
         g_disconnected = Graph.Full(3) + Graph.Full(3)  # No connecting edge
         with self.assertRaises(Exception):
             g_disconnected.community_fluid_communities(2)
-        
+
         # Test with single vertex (edge case)
         g_single = Graph(1)
         cl = g_single.community_fluid_communities(1)
         self.assertEqual(cl.membership, [0])
-        
+
         # Test with small connected graph
         g_small = Graph([(0, 1), (1, 2), (2, 0)])  # Triangle
         cl = g_small.community_fluid_communities(1)
         self.assertEqual(len(set(cl.membership)), 1)
         self.assertEqual(cl.membership, [0, 0, 0])
-        
+
         # Test deterministic behavior on simple structure
         # Note: Fluid communities can be non-deterministic due to randomization,
         # but on very simple structures it should be consistent
         g_path = Graph([(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)])
         cl = g_path.community_fluid_communities(2)
         self.assertEqual(len(set(cl.membership)), 2)
-        
+
         # Test that it returns a VertexClustering object
         g = Graph.Full(6)
         cl = g.community_fluid_communities(2)
@@ -534,7 +542,7 @@ class CommunityTests(unittest.TestCase):
                 ok = True
                 break
         self.assertTrue(ok)
-        
+
     def testVoronoi(self):
         # Test 1: Two disconnected cliques - should find exactly 2 communities
         g = Graph.Full(5) + Graph.Full(5)  # Two separate complete graphs
@@ -638,6 +646,360 @@ class CommunityTests(unittest.TestCase):
             initial_membership=[0] * G.vcount(),
         )
         self.assertMembershipsEqual(cl, [0, 1, 0, 0, 0, 1, 1, 1])
+
+    def testLeidenOverlapping(self):
+        g = Graph.Formula("0-1, 1-2, 2-0, 2-3, 3-4, 4-2")
+        from inspect import signature
+
+        leiden_signature = signature(g.community_leiden)
+        self.assertIn("local_move_only", leiden_signature.parameters)
+        self.assertIn("debug_trace", leiden_signature.parameters)
+        self.assertLess(
+            list(leiden_signature.parameters).index("node_weights"),
+            list(leiden_signature.parameters).index("debug_trace"),
+        )
+        old_keyword = "_".join(("only", "local", "moving"))
+        self.assertNotIn(old_keyword, leiden_signature.parameters)
+
+        cover = g.community_leiden(
+            objective_function="CPM",
+            resolution=0.5,
+            max_memberships=2,
+            n_iterations=5,
+            local_move_only=False,
+        )
+        from igraph.clustering import VertexCover
+        self.assertIsInstance(cover, VertexCover)
+        self.assertGreaterEqual(len(cover), 2)
+
+        with self.assertRaises(TypeError):
+            g.community_leiden(max_memberships=2, **{old_keyword: True})
+
+    def testLeidenOverlappingRejectsMalformedNestedMembershipsSafely(self):
+        from igraph._igraph import GraphBase
+
+        g = Graph(n=2, edges=[(0, 1)])
+
+        def call(rows):
+            return GraphBase.community_leiden(
+                g,
+                resolution=0.5,
+                max_memberships=2,
+                initial_membership=rows,
+                n_iterations=-1,
+            )
+
+        def partially_invalid_row():
+            yield 0
+            yield "bad"
+
+        def invalid_row_iterator():
+            yield 0
+            raise RuntimeError("row iterator failed")
+
+        def invalid_outer_iterator():
+            yield [0]
+            raise RuntimeError("outer iterator failed")
+
+        malformed = (
+            (["bad", [0]], TypeError),
+            ([[0], "bad"], TypeError),
+            ([[0], [0, "bad"]], TypeError),
+            ([[0], partially_invalid_row()], TypeError),
+            ([[0], invalid_row_iterator()], RuntimeError),
+            ((row for row in ([0], "bad")), TypeError),
+            (invalid_outer_iterator(), RuntimeError),
+        )
+
+        for rows, exception in malformed:
+            with self.subTest(rows=rows, exception=exception):
+                with self.assertRaises(exception):
+                    call(rows)
+
+        # Conversion failures must not leave stale ownership or error state
+        # behind. A subsequent valid call through the same binding succeeds.
+        memberships, n_clusters, quality = call([[0], [1]])
+        self.assertEqual(len(memberships), 2)
+        self.assertGreaterEqual(n_clusters, 1)
+        self.assertTrue(math.isfinite(quality))
+
+    def testLeidenOverlappingInputContract(self):
+        from igraph._igraph import GraphBase
+
+        g = Graph(n=2, edges=[(0, 1)])
+
+        scalar_cases = (
+            ({"resolution": math.nan}, InternalError),
+            ({"resolution": math.inf}, InternalError),
+            ({"beta": math.nan}, InternalError),
+            ({"beta": math.inf}, InternalError),
+            ({"beta": -0.01}, InternalError),
+            ({"edge_weights": [-1.0]}, InternalError),
+            ({"edge_weights": [0.0]}, InternalError),
+            ({"edge_weights": [math.nan]}, InternalError),
+            ({"node_weights": [-1.0, 1.0]}, InternalError),
+            ({"node_weights": [math.inf, 1.0]}, InternalError),
+            ({"max_memberships": 3}, InternalError),
+        )
+        for extra, exception in scalar_cases:
+            kwargs = {
+                "resolution": 0.1,
+                "beta": 0.01,
+                "max_memberships": 2,
+                "n_iterations": 0,
+            }
+            kwargs.update(extra)
+            with self.subTest(extra=extra):
+                with self.assertRaises(exception):
+                    GraphBase.community_leiden(g, **kwargs)
+
+        with self.assertRaises(ValueError):
+            GraphBase.community_leiden(
+                g, max_memberships=2, normalize_resolution=True
+            )
+        with self.assertRaises(ValueError):
+            GraphBase.community_leiden(
+                g, max_memberships=2, node_in_weights=[1.0, 1.0]
+            )
+
+        # Finite negative resolution and zero node weights remain supported.
+        memberships, n_clusters, quality = GraphBase.community_leiden(
+            g,
+            node_weights=[0.0, 0.0],
+            resolution=-0.1,
+            beta=0.0,
+            max_memberships=2,
+            n_iterations=0,
+        )
+        self.assertEqual(memberships, [[0], [1]])
+        self.assertEqual(n_clusters, 2)
+        self.assertTrue(math.isfinite(quality))
+
+        with self.assertRaises(ValueError):
+            Graph(n=2, edges=[(0, 1)], directed=True).community_leiden(
+                max_memberships=2
+            )
+        with self.assertRaises(ValueError):
+            Graph(n=2, edges=[(0, 0), (0, 1)]).community_leiden(
+                max_memberships=2
+            )
+        with self.assertRaises(ValueError):
+            Graph(n=2).community_leiden(max_memberships=2)
+        with self.assertRaises(ValueError):
+            g.community_leiden(objective_function="modularity", max_memberships=2)
+
+    def testLeidenOverlappingGuardsPositiveBudgetInOriginalUnits(self):
+        from igraph._igraph import GraphBase
+
+        g = Graph(
+            n=4,
+            edges=[(0, 1), (0, 2), (0, 3), (1, 2), (2, 3)],
+        )
+        edge_weights = [0.25, 2.0, 0.1, 1.0, 1.0]
+        initial = [[1, 2], [0], [0, 1, 2], [0, 1, 2]]
+        common = {
+            "edge_weights": edge_weights,
+            "resolution": 0.5,
+            "beta": 0.01,
+            "max_memberships": 3,
+            "initial_membership": initial,
+            "allow_isolation": False,
+            "local_move_only": False,
+        }
+
+        before, _, quality_before = GraphBase.community_leiden(
+            g, n_iterations=0, **common
+        )
+        set_random_number_generator(random.Random(1452719858))
+        self.addCleanup(set_random_number_generator, random)
+        after, _, quality_after = GraphBase.community_leiden(
+            g, n_iterations=1, **common
+        )
+
+        self.assertEqual(after, before)
+        self.assertAlmostEqual(quality_after, quality_before, places=12)
+
+    def testLeidenOverlappingDiagnosticTrace(self):
+        from igraph._igraph import GraphBase
+
+        g = Graph(
+            n=11,
+            edges=[
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (0, 4),
+                (1, 2),
+                (1, 3),
+                (1, 4),
+                (2, 3),
+                (2, 4),
+                (3, 4),
+                (5, 6),
+                (5, 7),
+                (5, 8),
+                (5, 9),
+                (6, 7),
+                (6, 8),
+                (6, 9),
+                (7, 8),
+                (7, 9),
+                (8, 9),
+                (10, 0),
+                (10, 1),
+                (10, 2),
+                (10, 5),
+                (10, 6),
+                (10, 7),
+            ],
+        )
+        set_random_number_generator(random.Random(20260912))
+        self.addCleanup(set_random_number_generator, random)
+        cover = g.community_leiden(
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=2,
+            local_move_only=False,
+            debug_trace=True,
+        )
+        trace = cover._params["debug_trace"]
+        self.assertEqual(trace["schema_version"], 1)
+        self.assertGreater(len(trace["moves"]), 0)
+        self.assertGreater(len(trace["projections"]), 0)
+
+        for move in trace["moves"]:
+            self.assertGreater(move["predicted_delta"], 0.0)
+            self.assertGreater(move["direct_delta"], 0.0)
+            self.assertLessEqual(move["abs_error"], move["tolerance"])
+            self.assertGreaterEqual(move["quality_after"], move["quality_before"])
+            self.assertIsInstance(move["sequence"], int)
+
+        for projection in trace["projections"]:
+            self.assertGreater(projection["original_weight"], 0.0)
+            self.assertGreater(projection["token_weight"], 0.0)
+            self.assertGreaterEqual(projection["token_count"], g.vcount())
+            self.assertGreaterEqual(projection["token_edge_count"], g.ecount())
+            self.assertGreaterEqual(projection["collision_count"], 0)
+            self.assertLessEqual(projection["token_identity_abs_error"], 1e-12)
+            expected = (
+                projection["quality_projected"]
+                if projection["accepted"]
+                else projection["quality_before"]
+            )
+            self.assertAlmostEqual(projection["quality_committed"], expected)
+            self.assertGreaterEqual(
+                projection["quality_committed"] + 1e-12,
+                projection["quality_before"],
+            )
+        self.assertGreater(
+            max(row["collision_count"] for row in trace["projections"]), 0
+        )
+        self.assertTrue(any(row["accepted"] for row in trace["projections"]))
+        self.assertTrue(any(not row["accepted"] for row in trace["projections"]))
+
+        raw = GraphBase.community_leiden(
+            g,
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=0,
+            debug_trace=True,
+        )
+        self.assertEqual(len(raw), 5)
+        self.assertEqual(raw[3], [])
+        self.assertEqual(raw[4], [])
+
+        for _ in range(3):
+            with self.assertRaises(InternalError):
+                GraphBase.community_leiden(
+                    g,
+                    max_memberships=3,
+                    resolution=math.nan,
+                    n_iterations=1,
+                    debug_trace=True,
+                )
+        recovered = GraphBase.community_leiden(
+            g,
+            max_memberships=3,
+            resolution=0.2,
+            n_iterations=0,
+            debug_trace=True,
+        )
+        self.assertEqual(len(recovered), 5)
+
+        with self.assertRaises(ValueError):
+            g.community_leiden(max_memberships=1, debug_trace=True)
+
+    @unittest.skipUnless(hasattr(signal, "SIGALRM"), "requires POSIX SIGALRM")
+    def testLeidenOverlappingInterruptsAndRecoversInSubprocess(self):
+        cases = {
+            "local": """
+                graph = ig.Graph.Ring(200000)
+                kwargs = dict(
+                    max_memberships=2,
+                    n_iterations=-1,
+                    local_move_only=True,
+                )
+                delay = 0.01
+            """,
+            "token": """
+                # Keep the token projection in flight long enough for the
+                # short alarm to exercise native interruption on fast runners.
+                graph = ig.Graph.Full(600)
+                kwargs = dict(
+                    max_memberships=2,
+                    initial_membership=[[0, 1] for _ in range(graph.vcount())],
+                    resolution=0.0,
+                    n_iterations=1,
+                    local_move_only=False,
+                )
+                delay = 0.005
+            """,
+        }
+
+        for name, setup in cases.items():
+            code = """
+                import signal
+                import igraph as ig
+
+            """ + setup + """
+
+                signal.signal(signal.SIGALRM, signal.default_int_handler)
+                signal.setitimer(signal.ITIMER_REAL, delay)
+                interrupted = False
+                try:
+                    graph.community_leiden(**kwargs)
+                except KeyboardInterrupt:
+                    interrupted = True
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+
+                if not interrupted:
+                    raise AssertionError("native call was not interrupted")
+
+                recovered = ig.Graph(n=2, edges=[(0, 1)]).community_leiden(
+                    max_memberships=2, n_iterations=0
+                )
+                if len(recovered.membership) != 2:
+                    raise AssertionError("valid call did not recover after interrupt")
+            """
+            child_env = os.environ.copy()
+            asan_runtime = child_env.get("IGRAPH_TEST_ASAN_RUNTIME")
+            if asan_runtime:
+                # dyld consumes DYLD_INSERT_LIBRARIES before Python starts, so
+                # explicitly restore it for sanitizer-instrumented children.
+                child_env["DYLD_INSERT_LIBRARIES"] = asan_runtime
+            completed = subprocess.run(
+                [sys.executable, "-c", textwrap.dedent(code)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=child_env,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"{name}: stdout={completed.stdout!r} stderr={completed.stderr!r}",
+            )
 
 
 class CohesiveBlocksTests(unittest.TestCase):
