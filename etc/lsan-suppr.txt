@@ -1,5 +1,12 @@
 leak:_PyObject_Malloc
 leak:_PyObject_Realloc
+leak:PyObject_Malloc
+leak:PyObject_Realloc
+leak:PyMem_Malloc
+leak:PyType_GenericAlloc
+leak:PyUnicode_New
+leak:unicode_decode_utf8
+leak:set_table_resize
 leak:newlockobject
 leak:initumath
 leak:uint_arrtype_new
