@@ -1,5 +1,23 @@
 # igraph Python interface changelog
 
+## [1.0.0.5] - unreleased
+
+### Added
+
+- `get_random_number_generator()` returns the generator passed to
+  `set_random_number_generator()` (or `None` for the C default), so a caller can
+  seed one computation and restore the previous generator exactly.
+- `Graph.community_leiden()` accepts `max_total_communities` and
+  `n_communities`, forwarded to `igraph_community_leiden_with_constraints()`.
+
+### Changed
+
+- Requires the native igraph 1.0.0.5 changes (faster overlapping local
+  moving, count constraints, and the fixes listed in the C changelog). Before
+  a release, `vendor/source/igraph` must point at the published C 1.0.0.5
+  commit; this development branch still vendors C `1.0.0.4` and is built
+  against a local C prefix.
+
 ## [1.0.0.4] - 2026-09-12
 
 ### Changed
