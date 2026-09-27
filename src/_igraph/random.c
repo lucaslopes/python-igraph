@@ -32,6 +32,7 @@
  *        functions and arguments used from Python's random number generator.
  */
 typedef struct {
+  PyObject* generator;
   PyObject* getrandbits_func;
   PyObject* randint_func;
   PyObject* random_func;
@@ -56,6 +57,9 @@ static igraph_rng_t igraph_rng_Python = {
   /* type = */ 0, /* state = */ 0, /* is_seeded = */ 1
 };
 static igraph_rng_t igraph_rng_default_saved = {0};
+/* Whether the default igraph RNG currently is the Python-backed generator
+ * stored in igraph_rng_Python_state (as opposed to the C-level default). */
+static igraph_bool_t igraph_rng_Python_active = false;
 
 igraph_error_t igraph_rng_Python_init(void **state) {
   IGRAPH_ERROR("Python RNG error, unsupported function called",
@@ -80,6 +84,7 @@ PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
     /* Reverting to the default igraph random number generator instead
      * of the Python-based one */
     igraph_rng_set_default(&igraph_rng_default_saved);
+    igraph_rng_Python_active = false;
     Py_RETURN_NONE;
   }
 
@@ -134,8 +139,12 @@ PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
 #undef GET_FUNC
 #undef GET_OPTIONAL_FUNC
 
+  Py_INCREF(object);
+  new_state.generator = object;
+
   old_state = igraph_rng_Python_state;
   igraph_rng_Python_state = new_state;
+  Py_XDECREF(old_state.generator);
   Py_XDECREF(old_state.getrandbits_func);
   Py_XDECREF(old_state.randint_func);
   Py_XDECREF(old_state.random_func);
@@ -146,8 +155,27 @@ PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
   Py_XDECREF(old_state.rng_max_as_pyobject);
 
   igraph_rng_set_default(&igraph_rng_Python);
+  igraph_rng_Python_active = true;
 
   Py_RETURN_NONE;
+}
+
+/**
+ * \ingroup python_interface_rng
+ * \brief Returns the random number generator used by igraph.
+ *
+ * Returns the Python object most recently passed to
+ * \c set_random_number_generator(), or \c None if the C-level default
+ * generator is active. Passing the returned value back to
+ * \c set_random_number_generator() restores the generator, which lets
+ * callers seed igraph temporarily without discarding a user's choice.
+ */
+PyObject* igraph_rng_Python_get_generator(PyObject* self, PyObject* Py_UNUSED(ignored)) {
+  if (!igraph_rng_Python_active || igraph_rng_Python_state.generator == 0) {
+    Py_RETURN_NONE;
+  }
+  Py_INCREF(igraph_rng_Python_state.generator);
+  return igraph_rng_Python_state.generator;
 }
 
 /**
