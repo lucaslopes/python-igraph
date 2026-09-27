@@ -815,9 +815,18 @@ class CommunityTests(unittest.TestCase):
         after, _, quality_after = GraphBase.community_leiden(
             g, n_iterations=1, **common
         )
+        set_random_number_generator(random.Random(1452719858))
+        local_only, _, quality_local = GraphBase.community_leiden(
+            g, n_iterations=1, **{**common, "local_move_only": True}
+        )
 
-        self.assertEqual(after, before)
-        self.assertAlmostEqual(quality_after, quality_before, places=12)
+        # The guard compares the token proposal with the cover reached by the
+        # iteration's local moving and restores that cover on rejection, so
+        # the result is exactly a local-moving-only iteration from the same
+        # seed, and never worse than the start.
+        self.assertEqual(after, local_only)
+        self.assertAlmostEqual(quality_after, quality_local, places=12)
+        self.assertGreaterEqual(quality_after, quality_before - 1e-12)
 
     def testLeidenOverlappingDiagnosticTrace(self):
         from igraph._igraph import GraphBase
