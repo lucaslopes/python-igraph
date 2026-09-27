@@ -519,6 +519,8 @@ def _community_leiden(
     local_move_only=False,
     node_weights=None,
     debug_trace=False,
+    max_total_communities=None,
+    n_communities=None,
     **kwds,
 ):
     """Finds the community structure of the graph using the Leiden
@@ -580,7 +582,19 @@ def _community_leiden(
     @param debug_trace: if true in overlapping mode, recompute every accepted
       original-space move directly and record accepted-move and token-projection
       diagnostics in C{result._params["debug_trace"]}. This validation path is
-      intentionally expensive and is intended only for bounded fixtures.
+      intentionally expensive and is intended only for bounded fixtures. It
+      cannot be combined with the community-count constraints below.
+    @param max_total_communities: if given, at most this many communities are
+      occupied by every state visited by local moving, including every
+      aggregate and token level of the multilevel phase. C{None} disables the
+      bound. Unlike C{max_memberships}, which limits the communities of one
+      vertex, this limits the communities of the whole result.
+    @param n_communities: if given, exactly this many communities are
+      occupied; no community is created or emptied. It must not exceed
+      C{max_total_communities}, the vertex count for partitions, or the
+      vertex count times C{max_memberships} for covers. Without an initial
+      membership, vertex M{v} starts in community M{v mod K}. An initial
+      membership that violates a constraint is rejected.
     @return: a L{VertexClustering} when C{max_memberships == 1}, or a
       L{VertexCover} when C{max_memberships > 1}. The clustering carries a
       C{quality} parameter with the internal quality of the result.
@@ -589,6 +603,30 @@ def _community_leiden(
 
     if max_memberships < 1:
         raise ValueError("max_memberships must be at least 1.")
+    for name, value in (
+        ("max_total_communities", max_total_communities),
+        ("n_communities", n_communities),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise ValueError(f"{name} must be a positive integer or None.")
+    if (
+        max_total_communities is not None
+        and n_communities is not None
+        and n_communities > max_total_communities
+    ):
+        raise ValueError("n_communities must not exceed max_total_communities.")
+    if debug_trace and (max_total_communities is not None or n_communities is not None):
+        raise ValueError(
+            "debug_trace cannot be combined with community-count constraints."
+        )
+    count_limits = {
+        "max_total_communities": -1
+        if max_total_communities is None
+        else max_total_communities,
+        "n_communities": -1 if n_communities is None else n_communities,
+    }
 
     if max_memberships > 1:
         if objective_function.lower() != "cpm":
@@ -640,6 +678,7 @@ def _community_leiden(
             n_iterations=n_iterations,
             allow_isolation=allow_isolation,
             local_move_only=local_move_only,
+            **count_limits,
         )
 
         params = {"quality": quality}
@@ -666,6 +705,7 @@ def _community_leiden(
         allow_isolation=allow_isolation,
         local_move_only=local_move_only,
         debug_trace=debug_trace,
+        **count_limits,
     )
     if debug_trace:
         memberships, nb_clusters, quality, move_rows, projection_rows = raw_result

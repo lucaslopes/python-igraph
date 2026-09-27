@@ -13758,7 +13758,8 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
 
   static char *kwlist[] = {"edge_weights", "node_weights", "node_in_weights", "resolution",
                            "normalize_resolution", "beta", "max_memberships", "initial_membership", "n_iterations",
-                           "allow_isolation", "local_move_only", "debug_trace", NULL};
+                           "allow_isolation", "local_move_only", "debug_trace",
+                           "max_total_communities", "n_communities", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
@@ -13774,6 +13775,8 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
 
   int error = 0;
   Py_ssize_t max_memberships = 1;
+  Py_ssize_t max_total_communities = -1;
+  Py_ssize_t n_communities = -1;
   Py_ssize_t n_iterations = 2;
   double resolution = 1.0;
   double beta = 0.01;
@@ -13791,8 +13794,9 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   igraph_real_t quality = 0.0;
   igraph_matrix_t move_trace, projection_trace;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdnOnOOO", kwlist,
-        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &local_move_only_o, &debug_trace_o))
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdnOnOOOnn", kwlist,
+        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &max_memberships, &initial_membership_o, &n_iterations, &allow_isolation_o, &local_move_only_o, &debug_trace_o,
+        &max_total_communities, &n_communities))
     return NULL;
 
   allow_isolation = PyObject_IsTrue(allow_isolation_o);
@@ -13803,7 +13807,23 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     PyErr_SetString(PyExc_ValueError, "maximum number of memberships must be at least 1");
     return NULL;
   }
+  if (max_total_communities == 0 || n_communities == 0) {
+    PyErr_SetString(PyExc_ValueError,
+      "community-count constraints must be positive (or negative to disable them)");
+    return NULL;
+  }
+  if (max_total_communities < 0) {
+    max_total_communities = -1;
+  }
+  if (n_communities < 0) {
+    n_communities = -1;
+  }
   overlapping = (max_memberships > 1);
+  if (debug_trace && (max_total_communities > 0 || n_communities > 0)) {
+    PyErr_SetString(PyExc_ValueError,
+      "debug_trace cannot be combined with community-count constraints");
+    return NULL;
+  }
   if (debug_trace && !overlapping) {
     PyErr_SetString(PyExc_ValueError,
       "debug_trace is available only in overlapping Leiden mode");
@@ -13927,10 +13947,12 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
                                       &move_trace, &projection_trace);
       diagnostic_traces_valid = !error;
     } else {
-      error = igraph_community_leiden(&self->g,
+      error = igraph_community_leiden_with_constraints(&self->g,
                                       edge_weights, node_weights, node_in_weights,
                                       resolution, beta,
                                       (igraph_int_t)max_memberships,
+                                      (igraph_int_t)max_total_communities,
+                                      (igraph_int_t)n_communities,
                                       start, (igraph_int_t)n_iterations,
                                       allow_isolation, local_move_only,
                                       overlapping ? NULL : membership,
@@ -19172,8 +19194,10 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    (PyCFunction) igraphmodule_Graph_community_leiden,
    METH_VARARGS | METH_KEYWORDS,
    "community_leiden(edge_weights=None, node_weights=None, "
-   "resolution=1.0, normalize_resolution=False, beta=0.01, "
-   "initial_membership=None, n_iterations=2)\n--\n\n"
+   "node_in_weights=None, resolution=1.0, normalize_resolution=False, "
+   "beta=0.01, max_memberships=1, initial_membership=None, n_iterations=2, "
+   "allow_isolation=True, local_move_only=False, debug_trace=False, "
+   "max_total_communities=-1, n_communities=-1)\n--\n\n"
    "Finds the community structure of the graph using the Leiden algorithm of\n"
    "Traag, van Eck & Waltman.\n\n"
    "@param edge_weights: edge weights to be used. Can be a sequence or\n"
@@ -19196,6 +19220,11 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "  also set this parameter to a negative number, which means that the\n"
    "  algorithm will be iterated until an iteration does not change the\n"
    "  current membership vector any more.\n"
+   "@param max_total_communities: upper bound on the number of occupied\n"
+   "  communities; negative disables it. See\n"
+   "  C{igraph_community_leiden_with_constraints()} in the C core.\n"
+   "@param n_communities: exact number of occupied communities; negative\n"
+   "  disables it. Cannot be combined with C{debug_trace}.\n"
    "@return: the community membership vector.\n"
   },
   {"community_walktrap",
