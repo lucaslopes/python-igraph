@@ -5,9 +5,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import textwrap
 import zipfile
+
+import pytest
+
+# scripts/release.sh is a bash tool for a POSIX release machine; Windows
+# cannot execute it directly.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the release helper is a bash script"
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
