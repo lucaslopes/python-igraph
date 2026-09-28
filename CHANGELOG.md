@@ -2,6 +2,25 @@
 
 ## [1.0.0.5] - unreleased
 
+### Breaking changes
+
+- `Graph.community_leiden()` has the positional parameters and defaults of
+  python-igraph 1.0.0 again: `(objective_function, weights, resolution, beta,
+  initial_membership, n_iterations, node_weights, node_in_weights)`. The fork's
+  controls (`max_memberships`, `allow_isolation`, `local_move_only`,
+  `max_total_communities`, `n_communities`, `debug_trace`) are keyword-only.
+  Positional calls written for 1.0.0.1-1.0.0.4, where `max_memberships`
+  was the sixth parameter, must pass it by keyword. `node_in_weights` is
+  accepted again for directed partitions.
+- `GraphBase.community_leiden()` keeps the 1.0.0 keyword order, with the
+  fork's keywords appended. A call that uses only the 1.0.0 keywords runs
+  the C function `igraph_community_leiden()` (the igraph 1.0.0 algorithm);
+  a fork-only keyword with a non-default value selects
+  `igraph_community_leiden_with_constraints()`, or
+  `igraph_community_leiden_with_diagnostics()` with `debug_trace`. With
+  `debug_trace`, the native result tuple ends with the move trace, the
+  projection trace (`None` in counters mode) and the counters.
+
 ### Added
 
 - `get_random_number_generator()` returns the generator passed to
@@ -9,6 +28,15 @@
   seed one computation and restore the previous generator exactly.
 - `Graph.community_leiden()` accepts `max_total_communities` and
   `n_communities`, forwarded to `igraph_community_leiden_with_constraints()`.
+- `debug_trace` works for partitions and covers, with or without community-count
+  limits. `debug_trace=True` (or `"full"`) records accepted moves (for
+  partitions on every aggregation level, with `level`, `occupied_before` and
+  `occupied_after`), overlapping projection rows, and counters;
+  `debug_trace="counters"` records only the counters. The trace is a common
+  envelope with the schema version, mode, runtime versions, the random number
+  generator in effect, the count policy, and what is recorded and omitted.
+  Partitions expose it in `result._params["debug_trace"]` and as
+  `result.debug_trace`.
 
 ### Changed
 
@@ -20,6 +48,11 @@
   a release, `vendor/source/igraph` must point at the published C 1.0.0.5
   commit; this development branch still vendors C `1.0.0.4` and is built
   against a local C prefix.
+
+- Errors for invalid cross-mode combinations name the conflicting option
+  (`objective_function`, `node_in_weights`, `normalize_resolution`, or
+  `max_memberships > 1` with a directed, looped or edgeless graph, a
+  non-finite resolution or a negative `beta`).
 
 ### Fixed
 
