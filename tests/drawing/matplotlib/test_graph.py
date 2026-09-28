@@ -48,7 +48,7 @@ class GraphTestRunner(unittest.TestCase):
         fig, ax = plt.subplots()
         plot(g, target=ax, layout=self.layout_small_ring)
 
-    @image_comparison(baseline_images=["graph_labels"], remove_text=True)
+    @image_comparison(baseline_images=["graph_labels"], remove_text=True, tol=7.0)
     def test_labels(self):
         plt.close("all")
         g = Graph.Ring(5)

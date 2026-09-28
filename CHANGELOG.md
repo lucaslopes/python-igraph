@@ -1,5 +1,60 @@
 # igraph Python interface changelog
 
+## [1.0.0.5] - lucas-igraph
+
+This release builds on python-igraph 1.0.0 with the lucas-igraph 1.0.0.5 C
+core, which adds overlapping Leiden communities, global community-count
+limits and diagnostics. The 1.0.0 call shape of `Graph.community_leiden()`
+is unchanged; the new controls are keyword-only extensions.
+
+### Added
+
+- `Graph.community_leiden(max_memberships=...)`: values greater than 1
+  compute an overlapping Leiden-CPM cover, returned as a `VertexCover`, and
+  accept a list of community-id lists as `initial_membership`.
+- Keyword-only `allow_isolation`, `local_move_only`, `max_total_communities`
+  (at most K occupied communities) and `n_communities` (exactly K) for
+  partitions and covers.
+- Keyword-only `debug_trace`: `True`/`"full"` records every accepted move
+  (partitions on every aggregation level), overlapping projection rows and
+  counters; `"counters"` records only the counters. The trace is returned in
+  `result._params["debug_trace"]` as an envelope with the schema version,
+  mode, runtime versions, the random number generator in effect, the count
+  policy, and what is recorded and omitted.
+- `get_random_number_generator()` returns the generator passed to
+  `set_random_number_generator()` (or `None` for the C default), so a caller
+  can seed one computation and restore the previous generator exactly.
+- `scripts/release.sh`, an artifact-first release helper that validates the
+  wheels and sdist of one CI run and publishes only files the package index
+  does not have yet.
+
+### Changed
+
+- The vendored C core is lucas-igraph 1.0.0.5. `GraphBase.community_leiden()`
+  keeps the 1.0.0 keyword order with the extension keywords appended; a call
+  without extension keywords runs `igraph_community_leiden()`, the igraph
+  1.0.0 algorithm, and extension keywords select
+  `igraph_community_leiden_with_constraints()` or
+  `igraph_community_leiden_with_diagnostics()`.
+- Overlapping Leiden rejects inputs outside its domain (directed, looped or
+  edgeless graphs, negative or non-finite weights, non-finite resolution or
+  `beta`, the modularity objective, `node_in_weights`) with errors that name
+  the conflicting option.
+- Build: Pyodide wheels are built with cibuildwheel, the Windows builds link
+  vcpkg's static zlib (`zs`) and retry Chocolatey installs, and the LSan
+  suppressions ship in the sdist.
+
+### Fixed
+
+- Rejected random number generators release their partially acquired
+  references and keep the active generator; errors in optional generator
+  attributes propagate.
+- Exceptions raised by the boolean arguments of `community_leiden` are
+  preserved, and resolution normalization no longer uses an unallocated
+  node-weight vector when its setup fails.
+- Malformed nested memberships no longer leave stale or uninitialized
+  integer vectors to be destroyed.
+
 ## [1.0.0] - 2025-10-23
 
 ### Added

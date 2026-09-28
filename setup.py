@@ -101,6 +101,10 @@ def find_static_library(library_name: str, library_path: List[str]) -> Optional[
     OS X."""
 
     variants = ["lib{0}.a", "{0}.a", "{0}.lib", "lib{0}.lib"]
+    # vcpkg's Windows static zlib port renames the library to zs.lib / zsd.lib
+    # (see ports/zlib/portfile.cmake: -lz -> -lzs for static Windows builds).
+    if library_name == "zlib":
+        variants.extend(["zs.lib", "libzs.lib", "zsd.lib", "libzsd.lib"])
     if is_unix_like():
         extra_libdirs = [
             "/opt/homebrew/lib",  # for newer Homebrew installations on macOS
@@ -278,9 +282,16 @@ class IgraphCCoreCMakeBuilder:
             args.insert(0, emcmake)
             args.append("-DIGRAPH_WARNINGS_AS_ERRORS:BOOL=OFF")
             args.append("-DIGRAPH_GRAPHML_SUPPORT:BOOL=OFF")
+            # Newer emscripten/wasm-ld crashes selecting instructions for the
+            # GLPK-based exact feedback arc set IP code. Turn GLPK off for wasm
+            # so those symbols stay as simple UNIMPLEMENTED stubs.
+            args.append("-DIGRAPH_GLPK_SUPPORT:BOOL=OFF")
 
         # Build the Python interface with vendored libraries
-        for deps in "ARPACK BLAS GLPK GMP LAPACK PLFIT".split():
+        vendored_deps = "ARPACK BLAS GMP LAPACK PLFIT".split()
+        if not building_with_emscripten():
+            vendored_deps.append("GLPK")
+        for deps in vendored_deps:
             args.append("-DIGRAPH_USE_INTERNAL_" + deps + "=ON")
 
         # Use link-time optinization if available
@@ -971,9 +982,9 @@ if should_build_abi3_wheel:
     cmdclass["bdist_wheel"] = bdist_wheel_abi3
 
 options = {
-    "name": "igraph",
+    "name": "lucas-igraph",
     "version": __version__,
-    "url": "https://igraph.org/python",
+    "url": "https://github.com/lucaslopes/python-igraph",
     "description": "High performance graph data structures and algorithms",
     "long_description": description,
     "license": "GNU General Public License (GPL)",

@@ -13750,35 +13750,179 @@ PyObject *igraphmodule_Graph_community_walktrap(igraphmodule_GraphObject * self,
   return res;
 }
 
+/* The diagnostic levels of community_leiden(debug_trace=...). */
+typedef enum {
+  IGRAPHMODULE_LEIDEN_TRACE_NONE = 0,
+  IGRAPHMODULE_LEIDEN_TRACE_COUNTERS,
+  IGRAPHMODULE_LEIDEN_TRACE_FULL
+} igraphmodule_leiden_trace_t;
+
+/* debug_trace: a truth value (true = "full"), "full" or "counters". A
+ * failed __bool__ keeps its exception. */
+static int igraphmodule_PyObject_to_leiden_trace(PyObject *o,
+    igraphmodule_leiden_trace_t *result) {
+  int truth;
+
+  if (PyUnicode_Check(o)) {
+    if (PyUnicode_CompareWithASCIIString(o, "full") == 0) {
+      *result = IGRAPHMODULE_LEIDEN_TRACE_FULL;
+      return 0;
+    }
+    if (PyUnicode_CompareWithASCIIString(o, "counters") == 0) {
+      *result = IGRAPHMODULE_LEIDEN_TRACE_COUNTERS;
+      return 0;
+    }
+    PyErr_SetString(PyExc_ValueError,
+      "debug_trace must be a boolean, \"full\" or \"counters\"");
+    return -1;
+  }
+  truth = PyObject_IsTrue(o);
+  if (truth < 0) {
+    return -1;
+  }
+  *result = truth ? IGRAPHMODULE_LEIDEN_TRACE_FULL : IGRAPHMODULE_LEIDEN_TRACE_NONE;
+  return 0;
+}
+
+/* Converts the diagnostic outputs (the traces may be absent) and appends
+ * them to the result tuple of community_leiden(). Steals `res`. */
+static PyObject *igraphmodule_leiden_diagnostic_result(PyObject *res,
+    igraph_bool_t overlapping, igraph_int_t nb_clusters, igraph_real_t quality,
+    igraph_matrix_t *move_trace, igraph_matrix_t *projection_trace,
+    igraph_vector_int_t *counters) {
+  PyObject *moves, *projections, *counts;
+
+  if (move_trace) {
+    moves = igraphmodule_matrix_t_to_PyList(move_trace, IGRAPHMODULE_TYPE_FLOAT);
+  } else {
+    moves = Py_None;
+    Py_INCREF(moves);
+  }
+  if (projection_trace) {
+    projections = igraphmodule_matrix_t_to_PyList(projection_trace, IGRAPHMODULE_TYPE_FLOAT);
+  } else {
+    projections = Py_None;
+    Py_INCREF(projections);
+  }
+  counts = igraphmodule_vector_int_t_to_PyList(counters);
+  if (moves == NULL || projections == NULL || counts == NULL) {
+    Py_XDECREF(counts);
+    Py_XDECREF(projections);
+    Py_XDECREF(moves);
+    Py_DECREF(res);
+    return NULL;
+  }
+  if (overlapping) {
+    return Py_BuildValue("NndNNN", res, (Py_ssize_t) nb_clusters, (double) quality,
+                         moves, projections, counts);
+  }
+  return Py_BuildValue("NdNNN", res, (double) quality, moves, projections, counts);
+}
+
 /**
  * Leiden community detection method of Traag, Waltman & van Eck
+ *
+ * The keywords before max_memberships are those of the python-igraph 1.0.0
+ * binding, in the same order and with the same defaults; a call that uses
+ * only them reaches the igraph 1.0.0 C function igraph_community_leiden().
+ * The extension keywords select the extended C entry points:
+ * igraph_community_leiden_with_constraints(), or
+ * igraph_community_leiden_with_diagnostics() when debug_trace is set.
  */
 PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         PyObject *args, PyObject *kwds) {
 
   static char *kwlist[] = {"edge_weights", "node_weights", "node_in_weights", "resolution",
-                           "normalize_resolution", "beta", "initial_membership", "n_iterations", NULL};
+                           "normalize_resolution", "beta", "initial_membership", "n_iterations",
+                           "max_memberships", "allow_isolation", "local_move_only", "debug_trace",
+                           "max_total_communities", "n_communities", NULL};
 
   PyObject *edge_weights_o = Py_None;
   PyObject *node_weights_o = Py_None;
   PyObject *node_in_weights_o = Py_None;
   PyObject *initial_membership_o = Py_None;
+  PyObject *allow_isolation_o = Py_True;
+  PyObject *local_move_only_o = Py_False;
+  PyObject *debug_trace_o = Py_False;
   PyObject *normalize_resolution = Py_False;
   PyObject *res = Py_None;
 
   int error = 0;
+  Py_ssize_t max_memberships = 1;
+  Py_ssize_t max_total_communities = -1;
+  Py_ssize_t n_communities = -1;
   Py_ssize_t n_iterations = 2;
   double resolution = 1.0;
   double beta = 0.01;
   igraph_vector_t *edge_weights = NULL, *node_weights = NULL, *node_in_weights = NULL;
   igraph_vector_int_t *membership = NULL;
+  igraph_vector_int_list_t memberships;
+  igraph_bool_t memberships_valid = false;
+  igraph_bool_t allow_isolation = true;
+  igraph_bool_t local_move_only = false;
+  igraphmodule_leiden_trace_t trace = IGRAPHMODULE_LEIDEN_TRACE_NONE;
+  igraph_bool_t diagnostics_valid = false;
   igraph_bool_t start = true;
+  igraph_bool_t overlapping, extended;
+  int truth;
+  igraph_bool_t normalize_resolution_value;
   igraph_int_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
+  igraph_matrix_t move_trace, projection_trace;
+  igraph_vector_int_t counters;
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdOn", kwlist,
-        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution, &normalize_resolution, &beta, &initial_membership_o, &n_iterations))
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOOdOdOnnOOOnn", kwlist,
+        &edge_weights_o, &node_weights_o, &node_in_weights_o, &resolution,
+        &normalize_resolution, &beta, &initial_membership_o, &n_iterations,
+        &max_memberships, &allow_isolation_o, &local_move_only_o, &debug_trace_o,
+        &max_total_communities, &n_communities))
     return NULL;
+
+  /* Convert before allocating native objects. A failed __bool__ must leave
+   * its original exception intact, without entering Leiden. */
+  truth = PyObject_IsTrue(allow_isolation_o);
+  if (truth < 0) return NULL;
+  allow_isolation = truth;
+  truth = PyObject_IsTrue(local_move_only_o);
+  if (truth < 0) return NULL;
+  local_move_only = truth;
+  if (igraphmodule_PyObject_to_leiden_trace(debug_trace_o, &trace)) return NULL;
+  truth = PyObject_IsTrue(normalize_resolution);
+  if (truth < 0) return NULL;
+  normalize_resolution_value = truth;
+
+  if (max_memberships < 1) {
+    PyErr_SetString(PyExc_ValueError, "maximum number of memberships must be at least 1");
+    return NULL;
+  }
+  if (max_total_communities == 0 || n_communities == 0) {
+    PyErr_SetString(PyExc_ValueError,
+      "community-count constraints must be positive (or negative to disable them)");
+    return NULL;
+  }
+  if (max_total_communities < 0) {
+    max_total_communities = -1;
+  }
+  if (n_communities < 0) {
+    n_communities = -1;
+  }
+  overlapping = (max_memberships > 1);
+  if (overlapping && normalize_resolution_value) {
+    PyErr_SetString(PyExc_ValueError,
+      "resolution normalization (the modularity objective) is not supported "
+      "with max_memberships > 1");
+    return NULL;
+  }
+  if (overlapping && node_in_weights_o != Py_None) {
+    PyErr_SetString(PyExc_ValueError,
+      "node_in_weights is not supported with max_memberships > 1 "
+      "(undirected overlapping Leiden)");
+    return NULL;
+  }
+  /* Only an extension keyword selects an extended entry point. */
+  extended = overlapping || !allow_isolation || local_move_only ||
+             max_total_communities > 0 || n_communities > 0 ||
+             trace != IGRAPHMODULE_LEIDEN_TRACE_NONE;
 
   if (n_iterations >= 0) {
     CHECK_SSIZE_T_RANGE(n_iterations, "number of iterations");
@@ -13807,26 +13951,48 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     error = -1;
   }
 
-  /* Get initial membership */
-  if (!error && igraphmodule_attrib_to_vector_int_t(initial_membership_o, self, &membership,
-    ATTRIBUTE_TYPE_VERTEX)) {
-    igraphmodule_handle_igraph_error();
-    error = -1;
-  }
-
-  if (!error && membership == 0) {
-    start = 0;
-    membership = (igraph_vector_int_t*)calloc(1, sizeof(igraph_vector_int_t));
-    if (membership == 0) {
-      PyErr_NoMemory();
-      error = -1;
-    } else if (igraph_vector_int_init(membership, 0)) {
+  if (!overlapping) {
+    /* Disjoint: initial membership is a flat per-vertex community id. */
+    if (!error && igraphmodule_attrib_to_vector_int_t(initial_membership_o, self, &membership,
+      ATTRIBUTE_TYPE_VERTEX)) {
       igraphmodule_handle_igraph_error();
       error = -1;
     }
+
+    if (!error && membership == 0) {
+      start = 0;
+      membership = (igraph_vector_int_t*)calloc(1, sizeof(igraph_vector_int_t));
+      if (membership == 0) {
+        PyErr_NoMemory();
+        error = -1;
+      } else if (igraph_vector_int_init(membership, 0)) {
+        igraphmodule_handle_igraph_error();
+        error = -1;
+      }
+    }
+  } else {
+    /* Overlapping: initial membership is a list of community-id lists. */
+    if (!error) {
+      if (initial_membership_o != Py_None) {
+        if (igraphmodule_PyObject_to_vector_int_list_t(initial_membership_o, &memberships)) {
+          error = -1;
+        } else {
+          memberships_valid = true;
+          start = true;
+        }
+      } else {
+        start = false;
+        if (igraph_vector_int_list_init(&memberships, 0)) {
+          igraphmodule_handle_igraph_error();
+          error = -1;
+        } else {
+          memberships_valid = true;
+        }
+      }
+    }
   }
 
-  if (!error && PyObject_IsTrue(normalize_resolution))
+  if (!error && normalize_resolution_value)
   {
     /* If we need to normalize the resolution parameter,
      * we will need to have node weights. */
@@ -13848,16 +14014,50 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         error = -1;
       }
     }
-    resolution /= igraph_vector_sum(node_weights);
+    if (!error) {
+      resolution /= igraph_vector_sum(node_weights);
+    }
   }
 
   /* Run actual Leiden algorithm for several iterations. */
   if (!error) {
-    error = igraph_community_leiden(&self->g,
-                                    edge_weights, node_weights, node_in_weights,
-                                    resolution, beta,
-                                    start, n_iterations, membership,
-                                    &nb_clusters, &quality);
+    if (!extended) {
+      error = igraph_community_leiden(&self->g,
+                                      edge_weights, node_weights, node_in_weights,
+                                      resolution, beta,
+                                      start, n_iterations, membership,
+                                      &nb_clusters, &quality);
+    } else if (trace == IGRAPHMODULE_LEIDEN_TRACE_NONE) {
+      error = igraph_community_leiden_with_constraints(&self->g,
+                                      edge_weights, node_weights, node_in_weights,
+                                      resolution, beta,
+                                      (igraph_int_t)max_memberships,
+                                      (igraph_int_t)max_total_communities,
+                                      (igraph_int_t)n_communities,
+                                      start, (igraph_int_t)n_iterations,
+                                      allow_isolation, local_move_only,
+                                      overlapping ? NULL : membership,
+                                      overlapping ? &memberships : NULL,
+                                      &nb_clusters, &quality);
+    } else {
+      const igraph_bool_t full = (trace == IGRAPHMODULE_LEIDEN_TRACE_FULL);
+      error = igraph_community_leiden_with_diagnostics(&self->g,
+                                      edge_weights, node_weights, node_in_weights,
+                                      resolution, beta,
+                                      (igraph_int_t)max_memberships,
+                                      (igraph_int_t)max_total_communities,
+                                      (igraph_int_t)n_communities,
+                                      start, (igraph_int_t)n_iterations,
+                                      allow_isolation, local_move_only,
+                                      overlapping ? NULL : membership,
+                                      overlapping ? &memberships : NULL,
+                                      &nb_clusters, &quality,
+                                      full ? &move_trace : NULL,
+                                      full ? &projection_trace : NULL,
+                                      &counters);
+      diagnostics_valid = !error;
+    }
+    if (error) igraphmodule_handle_igraph_error();
   }
 
   if (edge_weights != 0) {
@@ -13873,16 +14073,38 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     free(node_in_weights);
   }
 
-  if (!error && membership != 0) {
-    res = igraphmodule_vector_int_t_to_PyList(membership);
+  if (!error) {
+    res = overlapping ? igraphmodule_vector_int_list_t_to_PyList(&memberships)
+                      : igraphmodule_vector_int_t_to_PyList(membership);
   }
-
   if (membership != 0) {
     igraph_vector_int_destroy(membership);
     free(membership);
   }
+  if (memberships_valid) {
+    igraph_vector_int_list_destroy(&memberships);
+  }
 
-  return error ? NULL : Py_BuildValue("Nd", res, (double) quality);
+  if (!error && res != NULL && diagnostics_valid) {
+    const igraph_bool_t full = (trace == IGRAPHMODULE_LEIDEN_TRACE_FULL);
+    res = igraphmodule_leiden_diagnostic_result(res, overlapping, nb_clusters, quality,
+                                                full ? &move_trace : NULL,
+                                                full ? &projection_trace : NULL,
+                                                &counters);
+  } else if (!error && res != NULL) {
+    res = overlapping ?
+          Py_BuildValue("Nnd", res, (Py_ssize_t) nb_clusters, (double) quality) :
+          Py_BuildValue("Nd", res, (double) quality);
+  }
+  if (diagnostics_valid) {
+    igraph_vector_int_destroy(&counters);
+    if (trace == IGRAPHMODULE_LEIDEN_TRACE_FULL) {
+      igraph_matrix_destroy(&projection_trace);
+      igraph_matrix_destroy(&move_trace);
+    }
+  }
+
+  return error ? NULL : res;
 }
 
  /**
@@ -19058,13 +19280,25 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    (PyCFunction) igraphmodule_Graph_community_leiden,
    METH_VARARGS | METH_KEYWORDS,
    "community_leiden(edge_weights=None, node_weights=None, "
-   "resolution=1.0, normalize_resolution=False, beta=0.01, "
-   "initial_membership=None, n_iterations=2)\n--\n\n"
+   "node_in_weights=None, resolution=1.0, normalize_resolution=False, "
+   "beta=0.01, initial_membership=None, n_iterations=2, max_memberships=1, "
+   "allow_isolation=True, local_move_only=False, debug_trace=False, "
+   "max_total_communities=-1, n_communities=-1)\n--\n\n"
    "Finds the community structure of the graph using the Leiden algorithm of\n"
    "Traag, van Eck & Waltman.\n\n"
+   "The arguments up to C{n_iterations} are those of python-igraph 1.0.0, in\n"
+   "the same order and with the same defaults. A call that uses only them\n"
+   "runs C{igraph_community_leiden()} of the C core. The remaining keywords\n"
+   "are extensions; setting any of them to a non-default value\n"
+   "selects C{igraph_community_leiden_with_constraints()}, or\n"
+   "C{igraph_community_leiden_with_diagnostics()} when C{debug_trace} is set.\n\n"
+   "Attention: this function is wrapped in a more convenient syntax in the\n"
+   "derived class L{Graph}. It is advised to use that instead of this version.\n\n"
    "@param edge_weights: edge weights to be used. Can be a sequence or\n"
    "  iterable or even an edge attribute name.\n"
    "@param node_weights: the node weights used in the Leiden algorithm.\n"
+   "@param node_in_weights: the inbound node weights used in the directed\n"
+   "  variant of the Leiden algorithm.\n"
    "@param resolution: the resolution parameter to use.\n"
    "  Higher resolutions lead to more smaller communities, while \n"
    "  lower resolutions lead to fewer larger communities.\n"
@@ -19077,12 +19311,28 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "@param initial_membership: if provided, the Leiden algorithm\n"
    "  will try to improve this provided membership. If no argument is\n"
    "  provided, the aglorithm simply starts from the singleton partition.\n"
+   "  With C{max_memberships > 1} it is a list of community-id lists.\n"
    "@param n_iterations: the number of iterations to iterate the Leiden\n"
    "  algorithm. Each iteration may improve the partition further. You can\n"
    "  also set this parameter to a negative number, which means that the\n"
    "  algorithm will be iterated until an iteration does not change the\n"
    "  current membership vector any more.\n"
-   "@return: the community membership vector.\n"
+   "@param max_memberships: maximum number of communities of one vertex;\n"
+   "  values greater than 1 compute an overlapping cover.\n"
+   "@param allow_isolation: whether vertices may move to new, empty\n"
+   "  communities.\n"
+   "@param local_move_only: run only the local-moving phase.\n"
+   "@param debug_trace: C{True} or C{\"full\"} records the accepted-move and\n"
+   "  projection traces and the counters; C{\"counters\"} records only the\n"
+   "  counters.\n"
+   "@param max_total_communities: upper bound on the number of occupied\n"
+   "  communities; negative disables it.\n"
+   "@param n_communities: exact number of occupied communities; negative\n"
+   "  disables it.\n"
+   "@return: C{(membership, quality)} for partitions and\n"
+   "  C{(memberships, nb_clusters, quality)} for covers; with C{debug_trace}\n"
+   "  the move trace, projection trace (C{None} in counters mode) and the\n"
+   "  counters follow.\n"
   },
   {"community_walktrap",
    (PyCFunction) igraphmodule_Graph_community_walktrap,

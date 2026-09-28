@@ -1326,7 +1326,10 @@ int igraphmodule_PyObject_float_to_vector_t(PyObject *list, igraph_vector_t *v) 
  *
  * \param list the Python list to be converted
  * \param v the \c igraph_vector_int_t containing the result
- * \return 0 if everything was OK, 1 otherwise
+ * \return 0 if everything was OK, 1 otherwise. On success, \p v is
+ *   initialized and ownership is transferred to the caller. On failure,
+ *   this function destroys any storage it initialized, so the caller must
+ *   treat \p v as uninitialized and must not destroy it.
  */
 int igraphmodule_PyObject_to_vector_int_t(PyObject *list, igraph_vector_int_t *v) {
   PyObject *it = 0, *item;
@@ -1377,6 +1380,12 @@ int igraphmodule_PyObject_to_vector_int_t(PyObject *list, igraph_vector_int_t *v
         Py_DECREF(item);
       }
 
+      if (PyErr_Occurred()) {
+        igraph_vector_int_destroy(v);
+        Py_DECREF(it);
+        return 1;
+      }
+
       Py_DECREF(it);
     } else {
       PyErr_SetString(PyExc_TypeError, "sequence or iterable expected");
@@ -1387,6 +1396,9 @@ int igraphmodule_PyObject_to_vector_int_t(PyObject *list, igraph_vector_int_t *v
   }
 
   j = PySequence_Size(list);
+  if (j < 0) {
+    return 1;
+  }
 
   if (igraph_vector_int_init(v, j)) {
     igraphmodule_handle_igraph_error();
@@ -3157,9 +3169,8 @@ int igraphmodule_PyObject_to_vector_list_t(PyObject* list, igraph_vector_list_t*
  */
 int igraphmodule_PyObject_to_vector_int_list_t(PyObject* list, igraph_vector_int_list_t* veclist) {
   PyObject *it, *item;
-  igraph_vector_int_t vec;
 
-  if (PyUnicode_Check(list)) {
+  if (PyBaseString_Check(list)) {
     PyErr_SetString(PyExc_TypeError, "expected iterable (but not string)");
     return 1;
   }
@@ -3176,10 +3187,17 @@ int igraphmodule_PyObject_to_vector_int_list_t(PyObject* list, igraph_vector_int
   }
 
   while ((item = PyIter_Next(it)) != 0) {
+    /*
+     * The row converter returns an initialized vector only on success and
+     * destroys any partially initialized storage on failure. Keep the row
+     * temporary scoped to this iteration so a successfully transferred
+     * vector can never be mistaken for a live caller-owned object later.
+     */
+    igraph_vector_int_t vec;
+
     if (igraphmodule_PyObject_to_vector_int_t(item, &vec)) {
       Py_DECREF(item);
       Py_DECREF(it);
-      igraph_vector_int_destroy(&vec);
       igraph_vector_int_list_destroy(veclist);
       return 1;
     }
@@ -3194,6 +3212,12 @@ int igraphmodule_PyObject_to_vector_int_list_t(PyObject* list, igraph_vector_int
     }
 
     /* ownership of 'vec' taken by 'veclist' here */
+  }
+
+  if (PyErr_Occurred()) {
+    Py_DECREF(it);
+    igraph_vector_int_list_destroy(veclist);
+    return 1;
   }
 
   Py_DECREF(it);

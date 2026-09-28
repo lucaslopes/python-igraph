@@ -1,3 +1,5 @@
+import math
+
 from igraph._igraph import GraphBase
 from igraph.clustering import VertexDendrogram, VertexClustering
 from igraph.utils import deprecated
@@ -357,7 +359,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
       distances from generator points. If C{"out"} (the default), distances
       from generator points to all other nodes are considered following the
       direction of edges. If C{"in"}, distances are computed in the reverse
-      direction (i.e., from all nodes to generator points). If C{"all"}, 
+      direction (i.e., from all nodes to generator points). If C{"all"},
       edge directions are ignored and the graph is treated as undirected.
       This parameter is ignored for undirected graphs.
     @param radius: the radius/resolution to use when selecting generator points.
@@ -373,7 +375,7 @@ def _community_voronoi(graph, lengths=None, weights=None, mode="out", radius=Non
             mode = mode_map[mode.lower()]
         else:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: out, in, all")
-    
+
     membership, generators, modularity = GraphBase.community_voronoi(graph, lengths, weights, mode, radius)
 
     params = {"generators": generators}
@@ -452,6 +454,182 @@ def _k_core(graph, *args):
     return result
 
 
+_LEIDEN_MOVE_TRACE_COLUMNS = (
+    "sequence",
+    "stage",
+    "vertex",
+    "cardinality_before",
+    "cardinality_after",
+    "predicted_delta",
+    "direct_delta",
+    "abs_error",
+    "tolerance",
+    "quality_before",
+    "quality_after",
+    "original_weight",
+    "level",
+    "occupied_before",
+    "occupied_after",
+)
+
+_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS = (
+    "iteration",
+    "original_weight",
+    "token_weight",
+    "quality_before",
+    "quality_after_local",
+    "original_unnormalized",
+    "token_initial_quality",
+    "token_initial_unnormalized",
+    "token_identity_abs_error",
+    "token_final_quality",
+    "token_count",
+    "token_edge_count",
+    "collision_count",
+    "quality_projected",
+    "accepted",
+    "quality_committed",
+    "local_changed",
+    "token_changed",
+    "dedup_changed",
+    "labels_local",
+    "labels_proposed",
+)
+
+_LEIDEN_COUNTER_NAMES = (
+    "schema_version",
+    "max_memberships",
+    "max_total_communities",
+    "n_communities",
+    "iterations",
+    "certificate_sweeps",
+    "aggregate_levels",
+    "visits",
+    "accepted_moves",
+    "rejected_visits",
+    "proposals",
+    "proposals_improved",
+    "proposals_tied",
+    "proposals_rejected",
+    "move_rows",
+    "projection_rows",
+)
+
+# What the native diagnostics retain and omit (see
+# igraph_community_leiden_with_diagnostics() in the C core).
+_LEIDEN_TRACE_OMISSIONS = {
+    "rejected_candidates": "not recorded; each visit that keeps its vertex "
+    "in place is counted in rejected_visits",
+    "refinement_moves": "not recorded; refinement does not change the partition",
+    "token_graph_moves": "not recorded; each overlapping token stage is "
+    "summarized by one projection row",
+}
+
+
+def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_columns=()):
+    result = []
+    integer_columns = set(integer_columns)
+    boolean_columns = set(boolean_columns)
+    for row in rows:
+        if len(row) != len(columns):
+            raise ValueError("Unexpected Leiden diagnostic trace width")
+        record = dict(zip(columns, row))
+        for name in integer_columns:
+            record[name] = int(record[name])
+        for name in boolean_columns:
+            record[name] = bool(record[name])
+        result.append(record)
+    return result
+
+
+def _format_leiden_move_trace(rows):
+    columns = _LEIDEN_MOVE_TRACE_COLUMNS
+    records = _format_leiden_trace_rows(
+        columns,
+        rows,
+        integer_columns={
+            "sequence", "stage", "vertex", "cardinality_before",
+            "cardinality_after", "level", "occupied_before", "occupied_after",
+        },
+    )
+    return list(columns), records
+
+
+def _format_leiden_projection_trace(rows):
+    columns = _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS
+    records = _format_leiden_trace_rows(
+        columns,
+        rows,
+        integer_columns={
+            "iteration", "token_count", "token_edge_count", "collision_count",
+            "labels_local", "labels_proposed",
+        },
+        boolean_columns={"accepted", "local_changed", "token_changed", "dedup_changed"},
+    )
+    return list(columns), records
+
+
+def _leiden_rng_identity():
+    from igraph import get_random_number_generator
+
+    generator = get_random_number_generator()
+    if generator is None:
+        return "igraph default generator"
+    kind = type(generator)
+    return f"{kind.__module__}.{kind.__qualname__}"
+
+
+def _leiden_debug_trace(
+    level, overlapping, move_rows, projection_rows, counter_values,
+    max_total_communities, n_communities,
+):
+    """The common diagnostic envelope for partitions and covers."""
+    from igraph import __igraph_version__, __version__
+
+    if len(counter_values) != len(_LEIDEN_COUNTER_NAMES):
+        raise ValueError("Unexpected Leiden diagnostic counter width")
+    counters = dict(zip(_LEIDEN_COUNTER_NAMES, map(int, counter_values)))
+    full = level == "full"
+    move_columns, moves = _format_leiden_move_trace(move_rows if full else [])
+    projection_columns, projections = _format_leiden_projection_trace(
+        projection_rows if full else []
+    )
+    if n_communities is not None and max_total_communities is not None:
+        count_policy = "at_most_and_exact"
+    elif n_communities is not None:
+        count_policy = "exact"
+    elif max_total_communities is not None:
+        count_policy = "at_most"
+    else:
+        count_policy = "none"
+    return {
+        "schema_version": counters["schema_version"],
+        "mode": "cover" if overlapping else "partition",
+        "level": level,
+        "runtime": {
+            "igraph_c": __igraph_version__,
+            "python_igraph": __version__,
+            "rng": _leiden_rng_identity(),
+        },
+        "count_policy": {
+            "kind": count_policy,
+            "max_total_communities": max_total_communities,
+            "n_communities": n_communities,
+        },
+        "recorded": {
+            "accepted_moves": full,
+            "projections": full and overlapping,
+            "counters": True,
+        },
+        "omitted": dict(_LEIDEN_TRACE_OMISSIONS),
+        "counters": counters,
+        "move_columns": move_columns,
+        "moves": moves,
+        "projection_columns": projection_columns,
+        "projections": projections,
+    }
+
+
 def _community_leiden(
     graph,
     objective_function="CPM",
@@ -462,6 +640,13 @@ def _community_leiden(
     n_iterations=2,
     node_weights=None,
     node_in_weights=None,
+    *,
+    max_memberships=1,
+    allow_isolation=True,
+    local_move_only=False,
+    max_total_communities=None,
+    n_communities=None,
+    debug_trace=False,
     **kwds,
 ):
     """Finds the community structure of the graph using the Leiden
@@ -471,36 +656,102 @@ def _community_leiden(
     to Leiden: guaranteeing well-connected communities. I{Scientific Reports},
     9(1), 5233. doi: 10.1038/s41598-019-41695-z
 
+    The positional parameters and their defaults are those of python-igraph
+    1.0.0, and a call that uses only them runs the igraph 1.0.0 algorithm.
+    The keyword-only parameters after C{node_in_weights} are extensions:
+    overlapping covers, isolation and phase control, global
+    community-count limits and diagnostics. Mode is selected by
+    C{max_memberships}:
+
+      - C{max_memberships == 1} (default): a disjoint partition, returned as
+        a L{VertexClustering}.
+      - C{max_memberships > 1}: overlapping Leiden-CPM; each vertex may
+        belong to up to C{max_memberships} communities and the result is
+        a L{VertexCover}.
+
     @param objective_function: whether to use the Constant Potts
       Model (CPM) or modularity. Must be either C{"CPM"} or C{"modularity"}.
+      Overlapping mode (C{max_memberships > 1}) requires C{"CPM"}.
     @param weights: edge weights to be used. Can be a sequence or
-      iterable or even an edge attribute name.
+      iterable or even an edge attribute name. In overlapping mode they must
+      be finite and non-negative, with positive finite total weight.
     @param resolution: the resolution parameter to use. Higher resolutions
       lead to more smaller communities, while lower resolutions lead to fewer
-      larger communities.
+      larger communities. It must be finite in overlapping mode.
     @param beta: parameter affecting the randomness in the Leiden
-      algorithm. This affects only the refinement step of the algorithm.
+      algorithm. This affects only the refinement step of the algorithm. It
+      must be finite and non-negative in overlapping mode.
     @param initial_membership: if provided, the Leiden algorithm
       will try to improve this provided membership. If no argument is
       provided, the aglorithm simply starts from the singleton partition.
+      In overlapping mode it is a list of community-id lists, one per vertex.
     @param n_iterations: the number of iterations to iterate the Leiden
       algorithm. Each iteration may improve the partition further. Using
       a negative number of iterations will run until a stable iteration is
       encountered (i.e. the quality was not increased during that
-      iteration).
+      iteration). With any extension keyword the extended algorithm then
+      also runs local-moving sweeps until none moves a vertex: a
+      tolerance-level best-response certificate for covers. Positive
+      overlapping multilevel budgets may stop before that sweep, but a token
+      proposal is compared with the cover after local moving. It is retained
+      if its original-space quality improves beyond the numerical margin, or
+      ties within the margin and occupies fewer labels (at most
+      C{graph.vcount()} ties per call); otherwise that local cover is
+      restored.
     @param node_weights: the node weights used in the Leiden algorithm.
       If this is not provided, it will be automatically determined on the
       basis of whether you want to use CPM or modularity. If you do provide
       this, please make sure that you understand what you are doing.
+      Overlapping node weights must be finite and non-negative.
     @param node_in_weights: the inbound node weights used in the directed
       variant of the Leiden algorithm. If this is not provided, it will be
       automatically determined on the basis of whether you want to use CPM or
       modularity. If you do provide this, please make sure that you understand
-      what you are doing.
-    @return: an appropriate L{VertexClustering} object with an extra attribute
-      called C{quality} that stores the value of the internal quality function
-      optimized by the algorithm.
+      what you are doing. Not supported with C{max_memberships > 1}.
+    @param max_memberships: maximum number of communities a vertex may
+      belong to. C{1} selects disjoint Leiden; values greater than 1 select
+      overlapping Leiden-CPM and must not exceed the vertex count.
+    @param allow_isolation: if true, vertices may move to empty communities,
+      creating new ones. If false, they can only move to existing non-empty
+      communities, and local moving also considers the extreme-mass
+      community that no neighbour belongs to, so that a completed sweep is a
+      best response over the occupied communities.
+    @param local_move_only: if true, only the local moving phase (phase 1)
+      of the Leiden algorithm is executed. This skips the refinement phase
+      (phase 2) and the aggregation phase (phase 3), resulting in a faster
+      but potentially lower quality clustering.
+    @param max_total_communities: if given, at most this many communities are
+      occupied by every state visited by local moving, including every
+      aggregate and token level of the multilevel phase. C{None} disables the
+      bound. Unlike C{max_memberships}, which limits the communities of one
+      vertex, this limits the communities of the whole result.
+    @param n_communities: if given, exactly this many communities are
+      occupied; no community is created or emptied. It must not exceed
+      C{max_total_communities}, the vertex count for partitions, or the
+      vertex count times C{max_memberships} for covers. Without an initial
+      membership and C{K <= graph.vcount()}, vertex M{v} starts in community
+      M{v mod K}. For larger feasible C{K} in overlapping mode, labels are
+      distributed round-robin over vertices, giving some vertices multiple
+      memberships. An initial membership that violates a constraint is rejected.
+    @param debug_trace: records native diagnostics in
+      C{result._params["debug_trace"]} (partitions also expose it as the
+      C{debug_trace} attribute), for partitions and covers, with or
+      without count limits. C{True} or C{"full"} records every accepted move
+      of local moving on the original graph (and, for partitions, on every
+      aggregation level), with a direct recomputation of its quality change
+      -- deliberately expensive and intended for bounded fixtures -- every
+      overlapping multilevel proposal, and the counters. C{"counters"}
+      records only the counters: iterations, certificate sweeps, visits split
+      into accepted moves and rejected visits, and guard decisions. The
+      envelope names the schema version, runtime versions, the random number
+      generator in effect, the count policy, and what is recorded and
+      omitted; rejected candidates are never recorded individually.
+    @return: a L{VertexClustering} when C{max_memberships == 1}, or a
+      L{VertexCover} when C{max_memberships > 1}. The result carries a
+      C{quality} parameter with the internal quality of the result.
     """
+    from igraph.clustering import VertexCover
+
     if objective_function.lower() not in ("cpm", "modularity"):
         raise ValueError('objective_function must be "CPM" or "modularity".')
 
@@ -514,35 +765,146 @@ def _community_leiden(
     if kwds:
         raise TypeError("unexpected keyword argument")
 
-    membership, quality = GraphBase.community_leiden(
+    if isinstance(max_memberships, bool) or not isinstance(max_memberships, int):
+        raise ValueError("max_memberships must be an integer.")
+    if max_memberships < 1:
+        raise ValueError("max_memberships must be at least 1.")
+    for name, value in (
+        ("max_total_communities", max_total_communities),
+        ("n_communities", n_communities),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise ValueError(f"{name} must be a positive integer or None.")
+    if (
+        max_total_communities is not None
+        and n_communities is not None
+        and n_communities > max_total_communities
+    ):
+        raise ValueError("n_communities must not exceed max_total_communities.")
+    if isinstance(debug_trace, str):
+        if debug_trace not in ("full", "counters"):
+            raise ValueError('debug_trace must be a boolean, "full" or "counters".')
+        trace_level = debug_trace
+    else:
+        trace_level = "full" if debug_trace else None
+
+    overlapping = max_memberships > 1
+    if overlapping:
+        if objective_function.lower() != "cpm":
+            raise ValueError(
+                'max_memberships > 1 (overlapping Leiden) supports '
+                'objective_function="CPM" only.'
+            )
+        if node_in_weights is not None:
+            raise ValueError(
+                "node_in_weights is not supported with max_memberships > 1 "
+                "(overlapping Leiden is undirected)."
+            )
+        if graph.is_directed():
+            raise ValueError(
+                "max_memberships > 1 (overlapping Leiden) requires an undirected graph."
+            )
+        if graph.vcount() < 1 or graph.ecount() < 1:
+            raise ValueError(
+                "max_memberships > 1 (overlapping Leiden) requires a nonempty graph "
+                "with at least one edge."
+            )
+        if any(graph.is_loop()):
+            raise ValueError(
+                "max_memberships > 1 (overlapping Leiden) requires a loopless graph."
+            )
+        if max_memberships > graph.vcount():
+            raise ValueError(
+                "max_memberships must not exceed the vertex count in overlapping mode."
+            )
+        if not math.isfinite(resolution):
+            raise ValueError(
+                "resolution must be finite with max_memberships > 1 (overlapping Leiden)."
+            )
+        if not math.isfinite(beta) or beta < 0:
+            raise ValueError(
+                "beta must be finite and non-negative with max_memberships > 1 "
+                "(overlapping Leiden)."
+            )
+
+    # Extension keywords are passed only when they differ from the igraph
+    # 1.0.0 behaviour, so a call without them reaches igraph_community_leiden().
+    extensions = {}
+    if overlapping:
+        extensions["max_memberships"] = max_memberships
+    if not allow_isolation:
+        extensions["allow_isolation"] = False
+    if local_move_only:
+        extensions["local_move_only"] = True
+    if max_total_communities is not None:
+        extensions["max_total_communities"] = max_total_communities
+    if n_communities is not None:
+        extensions["n_communities"] = n_communities
+    if trace_level is not None:
+        extensions["debug_trace"] = trace_level
+
+    raw_result = GraphBase.community_leiden(
         graph,
         edge_weights=weights,
         node_weights=node_weights,
         node_in_weights=node_in_weights,
         resolution=resolution,
-        normalize_resolution=(objective_function == "modularity"),
+        normalize_resolution=(objective_function.lower() == "modularity"),
         beta=beta,
         initial_membership=initial_membership,
         n_iterations=n_iterations,
+        **extensions,
     )
 
-    params = {"quality": quality}
+    trace = None
+    if overlapping:
+        memberships, nb_clusters, quality = raw_result[:3]
+    else:
+        membership, quality = raw_result[:2]
+    if trace_level is not None:
+        move_rows, projection_rows, counter_values = raw_result[-3:]
+        trace = _leiden_debug_trace(
+            trace_level, overlapping, move_rows, projection_rows, counter_values,
+            max_total_communities, n_communities,
+        )
 
-    modularity_params = {"resolution": resolution}
-    if weights is not None:
-        modularity_params["weights"] = weights
+    if not overlapping:
+        params = {"quality": quality}
+        if trace is not None:
+            params["debug_trace"] = trace
 
-    return VertexClustering(
-        graph, membership, params=params, modularity_params=modularity_params
-    )
+        modularity_params = {"resolution": resolution}
+        if weights is not None:
+            modularity_params["weights"] = weights
+
+        clustering = VertexClustering(
+            graph, membership, params=params, modularity_params=modularity_params
+        )
+        if trace is not None:
+            # The same access path as for covers: result._params["debug_trace"].
+            clustering._params = dict(params)
+        return clustering
+
+    clusters = [[] for _ in range(nb_clusters)]
+    for v, comms in enumerate(memberships):
+        for c in comms:
+            clusters[c].append(v)
+
+    cover = VertexCover(graph, clusters)
+    cover._params = {"quality": quality}
+    if trace is not None:
+        cover._params["debug_trace"] = trace
+    return cover
 
 
 def _community_fluid_communities(graph, no_of_communities):
     """Community detection based on fluids interacting on the graph.
 
-    The algorithm is based on the simple idea of several fluids interacting 
-    in a non-homogeneous environment (the graph topology), expanding and 
-    contracting based on their interaction and density. Weighted graphs are 
+    The algorithm is based on the simple idea of several fluids interacting
+    in a non-homogeneous environment (the graph topology), expanding and
+    contracting based on their interaction and density. Weighted graphs are
     not supported.
 
     This function implements the community detection method described in:
@@ -556,14 +918,14 @@ def _community_fluid_communities(graph, no_of_communities):
     # Validate input parameters
     if no_of_communities <= 0:
         raise ValueError("no_of_communities must be greater than 0")
-    
+
     if no_of_communities > graph.vcount():
         raise ValueError("no_of_communities must be fewer than or equal to the number of vertices")
-    
+
     # Check if graph is weighted (not supported)
     if graph.is_weighted():
         raise ValueError("Weighted graphs are not supported by the fluid communities algorithm")
-    
+
     # Handle directed graphs - the algorithm works on undirected graphs
     # but can accept directed graphs (they are treated as undirected)
     if graph.is_directed():
@@ -573,11 +935,11 @@ def _community_fluid_communities(graph, no_of_communities):
             UserWarning,
             stacklevel=2
         )
-    
+
     membership = GraphBase.community_fluid_communities(graph, no_of_communities)
     return VertexClustering(graph, membership)
-  
-  
+
+
 def _modularity(self, membership, weights=None, resolution=1, directed=True):
     """Calculates the modularity score of the graph with respect to a given
     clustering.

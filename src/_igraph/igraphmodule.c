@@ -938,6 +938,14 @@ static PyMethodDef igraphmodule_methods[] =
       "  what igraph is doing right now, the second is the actual\n"
       "  progress information (a percentage).\n"
   },
+  {"get_random_number_generator", igraph_rng_Python_get_generator, METH_NOARGS,
+      "get_random_number_generator()\n--\n\n"
+      "Returns the random number generator used by igraph.\n\n"
+      "@return: the object most recently passed to\n"
+      "  L{set_random_number_generator()}, or C{None} if igraph uses its\n"
+      "  default C-level generator. Passing the returned value back to\n"
+      "  L{set_random_number_generator()} restores the generator.\n"
+  },
   {"set_random_number_generator", igraph_rng_Python_set_generator, METH_O,
       "set_random_number_generator(generator)\n--\n\n"
       "Sets the random number generator used by igraph.\n"
