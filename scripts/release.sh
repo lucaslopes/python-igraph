@@ -598,26 +598,45 @@ run_artifact_release() {
         return "$publish_status"
     fi
 
-    fetch_index_json "$index_url" "$after_json" false \
-        || die "post-upload package-index verification failed; do not retry blindly (artifacts preserved at $release_dir)"
-    local -a after_names=()
-    while IFS= read -r filename; do
-        [ -n "$filename" ] && after_names+=("$filename")
-    done < <(index_filenames "$after_json")
-
-    local missing_after_upload=false
-    for path in "${candidates[@]}"; do
-        basename=$(basename "$path")
-        if ! array_contains "$basename" ${after_names[@]+"${after_names[@]}"}; then
-            printf 'Error: successful uv exit but index verification is missing %s\n' "$basename" >&2
-            missing_after_upload=true
+    # The index publishes new files through caches, so a check right after a
+    # successful upload can still see the version as absent (404) or get a
+    # transient 5xx. Re-query for a bounded time before declaring failure.
+    local attempts="${RELEASE_VERIFY_ATTEMPTS:-20}"
+    local delay="${RELEASE_VERIFY_DELAY_SECONDS:-15}"
+    local attempt missing_after_upload
+    local -a after_names=() missing_names=()
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        missing_names=()
+        after_names=()
+        if fetch_index_json "$index_url" "$after_json" true 2>/dev/null; then
+            while IFS= read -r filename; do
+                [ -n "$filename" ] && after_names+=("$filename")
+            done < <(index_filenames "$after_json")
+        fi
+        for path in "${candidates[@]}"; do
+            basename=$(basename "$path")
+            if ! array_contains "$basename" ${after_names[@]+"${after_names[@]}"}; then
+                missing_names+=("$basename")
+            fi
+        done
+        [ "${#missing_names[@]}" -eq 0 ] && break
+        if [ "$attempt" -lt "$attempts" ]; then
+            printf 'Index does not list %s of %s uploaded files yet (attempt %s/%s); retrying in %ss...\n' \
+                "${#missing_names[@]}" "${#candidates[@]}" "$attempt" "$attempts" "$delay"
+            sleep "$delay"
         fi
     done
 
-    print_index_state_from_file "$after_json"
+    missing_after_upload=false
+    for basename in ${missing_names[@]+"${missing_names[@]}"}; do
+        printf 'Error: successful uv exit but index verification is missing %s\n' "$basename" >&2
+        missing_after_upload=true
+    done
+
+    [ "${#after_names[@]}" -gt 0 ] && print_index_state_from_file "$after_json"
     printf 'Artifacts and index snapshots are preserved at: %s\n' "$release_dir"
     [ "$missing_after_upload" = false ] \
-        || die "post-upload verification was incomplete; do not retry blindly"
+        || die "post-upload verification was incomplete after $attempts attempts; the upload may still be propagating -- re-run --preflight later instead of retrying the upload"
     echo "Upload and package-index verification completed successfully."
 }
 
