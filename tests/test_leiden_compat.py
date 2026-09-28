@@ -2,7 +2,7 @@
 
 * The positional parameters and defaults are those of python-igraph 1.0.0,
   and a call that uses only them runs the igraph 1.0.0 algorithm
-  (``igraph_community_leiden()``); fork-only controls are keyword-only.
+  (``igraph_community_leiden()``); extension controls are keyword-only.
 * The compatibility matrix: partitions and covers, both values of
   ``allow_isolation`` and ``local_move_only``, zero/positive/negative
   budgets, fresh and supplied starts, unconstrained/at-most/exact counts,
@@ -19,11 +19,11 @@ import unittest
 from igraph import Graph, GraphBase, InternalError, set_random_number_generator
 
 
-FORK_BASE_PARAMETERS = [
+IGRAPH_1_0_0_PARAMETERS = [
     "graph", "objective_function", "weights", "resolution", "beta",
     "initial_membership", "n_iterations", "node_weights", "node_in_weights",
 ]
-FORK_ONLY_PARAMETERS = [
+EXTENSION_PARAMETERS = [
     "max_memberships", "allow_isolation", "local_move_only",
     "max_total_communities", "n_communities", "debug_trace",
 ]
@@ -40,20 +40,20 @@ class LeidenCallShapeTests(unittest.TestCase):
         set_random_number_generator(random.Random(0))
         self.addCleanup(set_random_number_generator, random)
 
-    def test_signature_keeps_the_fork_base_positional_shape(self):
+    def test_signature_keeps_the_1_0_0_positional_shape(self):
         parameters = inspect.signature(Graph.community_leiden).parameters
         names = list(parameters)
-        self.assertEqual(names[: len(FORK_BASE_PARAMETERS)], FORK_BASE_PARAMETERS)
-        defaults = {name: parameters[name].default for name in FORK_BASE_PARAMETERS[1:]}
+        self.assertEqual(names[: len(IGRAPH_1_0_0_PARAMETERS)], IGRAPH_1_0_0_PARAMETERS)
+        defaults = {name: parameters[name].default for name in IGRAPH_1_0_0_PARAMETERS[1:]}
         self.assertEqual(defaults, {
             "objective_function": "CPM", "weights": None, "resolution": 1.0,
             "beta": 0.01, "initial_membership": None, "n_iterations": 2,
             "node_weights": None, "node_in_weights": None,
         })
-        for name in FORK_ONLY_PARAMETERS:
+        for name in EXTENSION_PARAMETERS:
             self.assertIs(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY, name)
 
-    def test_positional_fork_base_call(self):
+    def test_positional_1_0_0_call(self):
         graph = Graph.Famous("Zachary")
         start = [v % 3 for v in range(graph.vcount())]
         set_random_number_generator(random.Random(4))
@@ -67,7 +67,7 @@ class LeidenCallShapeTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             graph.community_leiden("CPM", None, 0.05, 0.01, start, 3, None, None, 2)
 
-    def test_native_keyword_order_is_the_fork_base_order(self):
+    def test_native_keyword_order_is_the_1_0_0_order(self):
         graph = Graph.Famous("Zachary")
         set_random_number_generator(random.Random(8))
         membership, quality = GraphBase.community_leiden(
@@ -86,7 +86,7 @@ class LeidenCallShapeTests(unittest.TestCase):
         )
         self.assertEqual(len(clustering.membership), graph.vcount())
 
-    def test_old_call_keeps_the_fork_base_candidate_set(self):
+    def test_1_0_0_call_keeps_the_1_0_0_candidate_set(self):
         # With a negative resolution, the extended local mover completes the
         # candidate set with clusters that no neighbour belongs to and merges
         # the two components; the igraph 1.0.0 algorithm cannot.

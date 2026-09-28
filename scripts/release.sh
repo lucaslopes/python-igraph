@@ -2,7 +2,7 @@
 
 # Guided release helper.
 #
-# Legacy Hedonic release usage is intentionally preserved:
+# Version-bump release:
 #   ./scripts/release.sh patch|minor|major [-p|--push]
 #
 # The artifact workflow validates and downloads a completed python-igraph CI
@@ -14,10 +14,11 @@
 set -euo pipefail
 
 readonly DEFAULT_REPOSITORY="lucaslopes/python-igraph"
-readonly DEFAULT_RUN_ID="34723765016"
-readonly DEFAULT_EXPECTED_COMMIT="9fbd3547cdb87b67d57954bc6a5ba901fbabe391"
 readonly DEFAULT_DISTRIBUTION="lucas-igraph"
-readonly DEFAULT_VERSION="1.0.0.4"
+# The expected artifact version is the package version of this checkout.
+DEFAULT_VERSION=$(sed -n 's/^__version_info__ = (\(.*\))$/\1/p' \
+    "$(dirname "$0")/../src/igraph/version.py" 2>/dev/null | tr -d ' ' | tr ',' '.')
+readonly DEFAULT_VERSION
 readonly DEFAULT_PUBLISH_URL="https://upload.pypi.org/legacy/"
 readonly DEFAULT_INDEX_JSON_BASE_URL="https://pypi.org/pypi"
 
@@ -28,8 +29,8 @@ Usage:
   ./scripts/release.sh --preflight|--inspect [options]
   ./scripts/release.sh --publish [options]
 
-Legacy Hedonic release:
-  patch|minor|major       Bump, build, commit, and tag Hedonic as before.
+Version-bump release:
+  patch|minor|major       Bump, build, commit, and tag the package version.
   -p, --push             Push main and the new tag to origin.
 
 lucas-igraph artifact workflow:
@@ -38,11 +39,12 @@ lucas-igraph artifact workflow:
   --publish              Run the same preflight, then ask silently for a token
                          immediately before publishing only new safe files.
   --repo OWNER/REPO      GitHub repository (default: lucaslopes/python-igraph).
-  --run-id ID            GitHub Actions run ID (default: 34723765016).
+  --run-id ID            Required GitHub Actions run ID.
   --expected-commit SHA  Required exact head SHA for the run.
   --distribution NAME    Expected distribution metadata name
                          (default: lucas-igraph).
-  --version VERSION      Expected artifact version (default: 1.0.0.4).
+  --version VERSION      Expected artifact version (default: the version in
+                         src/igraph/version.py).
   --publish-url URL      uv upload endpoint. Also configurable through
                          UV_PUBLISH_URL (default: PyPI legacy upload URL).
   --index-json-base URL  JSON API base used for duplicate detection and
@@ -53,7 +55,7 @@ lucas-igraph artifact workflow:
 For TestPyPI or a private index, provide both endpoints explicitly, for example:
   UV_PUBLISH_URL=https://test.pypi.org/legacy/ \
   PYPI_JSON_BASE_URL=https://test.pypi.org/pypi \
-  ./scripts/release.sh --preflight
+  ./scripts/release.sh --preflight --run-id ID --expected-commit SHA
 
 Security and safety:
   Tokens are never accepted as arguments or files. In --publish mode, an
@@ -102,7 +104,7 @@ if parsed.query or parsed.fragment:
 PY
 }
 
-run_legacy_release() {
+run_version_release() {
     local version_type="$1"
     shift
     local do_push=false
@@ -111,7 +113,7 @@ run_legacy_release() {
     for arg in "$@"; do
         case "$arg" in
             -p|--push) do_push=true ;;
-            *) die "unknown legacy release argument: $arg" ;;
+            *) die "unknown version-bump release argument: $arg" ;;
         esac
     done
 
@@ -126,9 +128,9 @@ run_legacy_release() {
     IFS='.' read -r major minor patch extra <<< "$current_version"
     [ -n "${major:-}" ] && [ -n "${minor:-}" ] && [ -n "${patch:-}" ] \
         && [ -z "${extra:-}" ] \
-        || die "legacy release requires a three-component numeric version"
+        || die "a version-bump release requires a three-component numeric version"
     [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] \
-        || die "legacy release requires a three-component numeric version"
+        || die "a version-bump release requires a three-component numeric version"
 
     local new_version
     case "$version_type" in
@@ -394,8 +396,8 @@ run_artifact_release() {
     shift
 
     local repository="${GH_REPOSITORY:-$DEFAULT_REPOSITORY}"
-    local run_id="${GH_RUN_ID:-$DEFAULT_RUN_ID}"
-    local expected_commit="${EXPECTED_COMMIT:-$DEFAULT_EXPECTED_COMMIT}"
+    local run_id="${GH_RUN_ID:-}"
+    local expected_commit="${EXPECTED_COMMIT:-}"
     local distribution="${RELEASE_DISTRIBUTION:-$DEFAULT_DISTRIBUTION}"
     local version="${RELEASE_VERSION:-$DEFAULT_VERSION}"
     local publish_url="${UV_PUBLISH_URL:-$DEFAULT_PUBLISH_URL}"
@@ -420,6 +422,8 @@ run_artifact_release() {
         esac
     done
 
+    [ -n "$run_id" ] || die "pass --run-id (or GH_RUN_ID) for the CI run that built the artifacts"
+    [ -n "$expected_commit" ] || die "pass --expected-commit (or EXPECTED_COMMIT) for the release commit"
     [ -n "$distribution" ] || die "distribution name cannot be empty"
     [ -n "$version" ] || die "version cannot be empty"
     [ -n "$publish_url" ] || die "publish URL cannot be empty"
@@ -615,7 +619,7 @@ main() {
         patch|minor|major)
             local version_type="$1"
             shift
-            run_legacy_release "$version_type" "$@"
+            run_version_release "$version_type" "$@"
             ;;
         --preflight|--inspect)
             shift

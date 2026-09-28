@@ -12,8 +12,13 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release.sh"
-VERSION = "1.0.0.4"
-COMMIT = "9fbd3547cdb87b67d57954bc6a5ba901fbabe391"
+_VERSION_INFO = (ROOT / "src" / "igraph" / "version.py").read_text()
+VERSION = ".".join(
+    part.strip()
+    for part in _VERSION_INFO.split("__version_info__ = (", 1)[1].split(")", 1)[0].split(",")
+)
+RUN_ID = "1234567890"
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
 def _metadata() -> bytes:
@@ -28,7 +33,7 @@ def _metadata() -> bytes:
 def _wheel(directory: Path, filename: str) -> None:
     path = directory / filename
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("lucas_igraph-1.0.0.4.dist-info/METADATA", _metadata())
+        archive.writestr(f"lucas_igraph-{VERSION}.dist-info/METADATA", _metadata())
 
 
 def _sdist(directory: Path) -> None:
@@ -132,7 +137,7 @@ def test_preflight_filters_unsupported_and_already_published_files(tmp_path: Pat
         }
     )
     result = subprocess.run(
-        [str(RELEASE_SCRIPT), "--preflight"],
+        [str(RELEASE_SCRIPT), "--preflight", "--run-id", RUN_ID, "--expected-commit", COMMIT],
         cwd=ROOT,
         env=env,
         text=True,
@@ -151,7 +156,7 @@ def test_preflight_filters_unsupported_and_already_published_files(tmp_path: Pat
     assert not uv_marker.exists()
     env["RELEASE_TEST_HTTP_STATUS"] = "404"
     missing_result = subprocess.run(
-        [str(RELEASE_SCRIPT), "--preflight"],
+        [str(RELEASE_SCRIPT), "--preflight", "--run-id", RUN_ID, "--expected-commit", COMMIT],
         cwd=ROOT,
         env=env,
         text=True,
@@ -166,7 +171,7 @@ def test_preflight_filters_unsupported_and_already_published_files(tmp_path: Pat
 
     env["RELEASE_TEST_HTTP_STATUS"] = "500"
     api_failure = subprocess.run(
-        [str(RELEASE_SCRIPT), "--publish"],
+        [str(RELEASE_SCRIPT), "--publish", "--run-id", RUN_ID, "--expected-commit", COMMIT],
         cwd=ROOT,
         env=env,
         text=True,

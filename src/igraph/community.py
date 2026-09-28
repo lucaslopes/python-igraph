@@ -472,9 +472,6 @@ _LEIDEN_MOVE_TRACE_COLUMNS = (
     "occupied_after",
 )
 
-# The name of 1.0.0.4, when only covers were traced.
-_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS = _LEIDEN_MOVE_TRACE_COLUMNS[:12]
-
 _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS = (
     "iteration",
     "original_weight",
@@ -546,39 +543,30 @@ def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_colu
 
 
 def _format_leiden_move_trace(rows):
-    # 1.0.0.5 appends the level and occupied-count columns (12 -> 15).
-    width = len(rows[0]) if rows else len(_LEIDEN_MOVE_TRACE_COLUMNS)
-    if width not in (12, 15):
-        raise ValueError("Unexpected Leiden move trace width")
-    columns = _LEIDEN_MOVE_TRACE_COLUMNS[:width]
+    columns = _LEIDEN_MOVE_TRACE_COLUMNS
     records = _format_leiden_trace_rows(
         columns,
         rows,
         integer_columns={
             "sequence", "stage", "vertex", "cardinality_before",
             "cardinality_after", "level", "occupied_before", "occupied_after",
-        }.intersection(columns),
+        },
     )
     return list(columns), records
 
 
 def _format_leiden_projection_trace(rows):
-    # 1.0.0.5 appends label counts. Keep older native libraries readable and
-    # identify their weaker trace explicitly, without fabricating counts.
-    width = len(rows[0]) if rows else len(_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS)
-    if width not in (19, 21):
-        raise ValueError("Unexpected overlapping Leiden projection trace width")
-    columns = _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS[:width]
+    columns = _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS
     records = _format_leiden_trace_rows(
         columns,
         rows,
         integer_columns={
             "iteration", "token_count", "token_edge_count", "collision_count",
             "labels_local", "labels_proposed",
-        }.intersection(columns),
+        },
         boolean_columns={"accepted", "local_changed", "token_changed", "dedup_changed"},
     )
-    return (2 if width == 21 else 1), list(columns), records
+    return list(columns), records
 
 
 def _leiden_rng_identity():
@@ -603,8 +591,8 @@ def _leiden_debug_trace(
     counters = dict(zip(_LEIDEN_COUNTER_NAMES, map(int, counter_values)))
     full = level == "full"
     move_columns, moves = _format_leiden_move_trace(move_rows if full else [])
-    projection_schema, projection_columns, projections = (
-        _format_leiden_projection_trace(projection_rows if full else [])
+    projection_columns, projections = _format_leiden_projection_trace(
+        projection_rows if full else []
     )
     if n_communities is not None and max_total_communities is not None:
         count_policy = "at_most_and_exact"
@@ -616,7 +604,6 @@ def _leiden_debug_trace(
         count_policy = "none"
     return {
         "schema_version": counters["schema_version"],
-        "projection_schema_version": projection_schema,
         "mode": "cover" if overlapping else "partition",
         "level": level,
         "runtime": {
@@ -671,8 +658,8 @@ def _community_leiden(
 
     The positional parameters and their defaults are those of python-igraph
     1.0.0, and a call that uses only them runs the igraph 1.0.0 algorithm.
-    The keyword-only parameters after C{node_in_weights} are extensions of
-    this fork: overlapping covers, isolation and phase control, global
+    The keyword-only parameters after C{node_in_weights} are extensions:
+    overlapping covers, isolation and phase control, global
     community-count limits and diagnostics. Mode is selected by
     C{max_memberships}:
 
@@ -702,7 +689,7 @@ def _community_leiden(
       algorithm. Each iteration may improve the partition further. Using
       a negative number of iterations will run until a stable iteration is
       encountered (i.e. the quality was not increased during that
-      iteration). With any fork-only keyword the extended algorithm then
+      iteration). With any extension keyword the extended algorithm then
       also runs local-moving sweeps until none moves a vertex: a
       tolerance-level best-response certificate for covers. Positive
       overlapping multilevel budgets may stop before that sweep, but a token
@@ -758,10 +745,7 @@ def _community_leiden(
       into accepted moves and rejected visits, and guard decisions. The
       envelope names the schema version, runtime versions, the random number
       generator in effect, the count policy, and what is recorded and
-      omitted; rejected candidates are never recorded individually. The move
-      columns C{level}, C{occupied_before} and C{occupied_after} and the
-      projection columns C{labels_local} and C{labels_proposed} are absent
-      from traces of older native libraries.
+      omitted; rejected candidates are never recorded individually.
     @return: a L{VertexClustering} when C{max_memberships == 1}, or a
       L{VertexCover} when C{max_memberships > 1}. The result carries a
       C{quality} parameter with the internal quality of the result.
@@ -845,8 +829,8 @@ def _community_leiden(
                 "(overlapping Leiden)."
             )
 
-    # Fork-only keywords are passed only when they differ from the
-    # fork-base behaviour, so an old call reaches igraph_community_leiden().
+    # Extension keywords are passed only when they differ from the igraph
+    # 1.0.0 behaviour, so a call without them reaches igraph_community_leiden().
     extensions = {}
     if overlapping:
         extensions["max_memberships"] = max_memberships

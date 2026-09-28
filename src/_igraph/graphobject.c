@@ -13822,10 +13822,10 @@ static PyObject *igraphmodule_leiden_diagnostic_result(PyObject *res,
 /**
  * Leiden community detection method of Traag, Waltman & van Eck
  *
- * The keywords before max_memberships are those of the fork-base 1.0.0
+ * The keywords before max_memberships are those of the python-igraph 1.0.0
  * binding, in the same order and with the same defaults; a call that uses
- * only them reaches the fork-base C function igraph_community_leiden(). The
- * fork-only keywords select the extended C entry points:
+ * only them reaches the igraph 1.0.0 C function igraph_community_leiden().
+ * The extension keywords select the extended C entry points:
  * igraph_community_leiden_with_constraints(), or
  * igraph_community_leiden_with_diagnostics() when debug_trace is set.
  */
@@ -13919,7 +13919,7 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
       "(undirected overlapping Leiden)");
     return NULL;
   }
-  /* Only a fork-only keyword selects an extended entry point. */
+  /* Only an extension keyword selects an extended entry point. */
   extended = overlapping || !allow_isolation || local_move_only ||
              max_total_communities > 0 || n_communities > 0 ||
              trace != IGRAPHMODULE_LEIDEN_TRACE_NONE;
@@ -19289,7 +19289,7 @@ struct PyMethodDef igraphmodule_Graph_methods[] = {
    "The arguments up to C{n_iterations} are those of python-igraph 1.0.0, in\n"
    "the same order and with the same defaults. A call that uses only them\n"
    "runs C{igraph_community_leiden()} of the C core. The remaining keywords\n"
-   "are extensions of this fork; setting any of them to a non-default value\n"
+   "are extensions; setting any of them to a non-default value\n"
    "selects C{igraph_community_leiden_with_constraints()}, or\n"
    "C{igraph_community_leiden_with_diagnostics()} when C{debug_trace} is set.\n\n"
    "Attention: this function is wrapped in a more convenient syntax in the\n"

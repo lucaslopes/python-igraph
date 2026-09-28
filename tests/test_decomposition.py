@@ -885,7 +885,6 @@ class CommunityTests(unittest.TestCase):
         )
         trace = cover._params["debug_trace"]
         self.assertEqual(trace["schema_version"], 3)
-        self.assertEqual(trace["projection_schema_version"], 2)
         self.assertEqual(trace["mode"], "cover")
         self.assertEqual(trace["counters"]["move_rows"], len(trace["moves"]))
         self.assertEqual(trace["counters"]["projection_rows"], len(trace["projections"]))
@@ -971,27 +970,6 @@ class CommunityTests(unittest.TestCase):
             self.assertEqual(move["cardinality_before"], 1)
             self.assertGreater(move["predicted_delta"], 0.0)
             self.assertLessEqual(move["abs_error"], move["tolerance"])
-
-    def testLeidenProjectionTraceCompatibility(self):
-        from igraph.community import _format_leiden_projection_trace
-
-        old_row = [0.0] * 19
-        schema, columns, rows = _format_leiden_projection_trace([old_row])
-        self.assertEqual(schema, 1)
-        self.assertEqual(len(columns), 19)
-        self.assertNotIn("labels_local", rows[0])
-
-        schema, columns, rows = _format_leiden_projection_trace([old_row + [2.0, 1.0]])
-        self.assertEqual(schema, 2)
-        self.assertEqual(columns[-2:], ["labels_local", "labels_proposed"])
-        self.assertEqual(rows[0]["labels_local"], 2)
-        self.assertEqual(rows[0]["labels_proposed"], 1)
-        self.assertIsInstance(rows[0]["labels_local"], int)
-        self.assertEqual(_format_leiden_projection_trace([])[0], 2)
-
-        for malformed in ([old_row[:-1]], [old_row + [1.0]], [old_row, old_row + [2.0, 1.0]]):
-            with self.assertRaisesRegex(ValueError, "trace width"):
-                _format_leiden_projection_trace(malformed)
 
     def testLeidenProjectionTraceCountsKeptAndRestoredTies(self):
         g = Graph(n=3, edges=[(0, 1), (0, 2)])
