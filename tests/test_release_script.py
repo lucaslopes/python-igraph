@@ -136,6 +136,9 @@ def test_preflight_filters_unsupported_and_already_published_files(tmp_path: Pat
             "UV_PUBLISH_TOKEN": "must-not-be-used",
         }
     )
+    # The sanitizer CI job preloads libasan/libubsan for the extension under
+    # test; the shell helpers started here must not inherit that preload.
+    env.pop("LD_PRELOAD", None)
     result = subprocess.run(
         [str(RELEASE_SCRIPT), "--preflight", "--run-id", RUN_ID, "--expected-commit", COMMIT],
         cwd=ROOT,

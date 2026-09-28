@@ -15,9 +15,21 @@ set -euo pipefail
 
 readonly DEFAULT_REPOSITORY="lucaslopes/python-igraph"
 readonly DEFAULT_DISTRIBUTION="lucas-igraph"
-# The expected artifact version is the package version of this checkout.
-DEFAULT_VERSION=$(sed -n 's/^__version_info__ = (\(.*\))$/\1/p' \
-    "$(dirname "$0")/../src/igraph/version.py" 2>/dev/null | tr -d ' ' | tr ',' '.')
+# The expected artifact version is the package version of this checkout,
+# read with shell built-ins only.
+read_package_version() {
+    local line version_file
+    version_file="$(dirname "$0")/../src/igraph/version.py"
+    [ -r "$version_file" ] || return 0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^__version_info__\ =\ \((.*)\)$ ]]; then
+            line="${BASH_REMATCH[1]// /}"
+            printf '%s' "${line//,/.}"
+            return 0
+        fi
+    done < "$version_file"
+}
+DEFAULT_VERSION=$(read_package_version)
 readonly DEFAULT_VERSION
 readonly DEFAULT_PUBLISH_URL="https://upload.pypi.org/legacy/"
 readonly DEFAULT_INDEX_JSON_BASE_URL="https://pypi.org/pypi"
