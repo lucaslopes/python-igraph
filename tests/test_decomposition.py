@@ -831,7 +831,7 @@ class CommunityTests(unittest.TestCase):
         # Diagnostic counts must describe the rejected proposal before the
         # native guard restores the three-label local cover.
         set_random_number_generator(random.Random(1452719858))
-        _, restored_count, _, _, projections = GraphBase.community_leiden(
+        _, restored_count, _, _, projections, _ = GraphBase.community_leiden(
             g, n_iterations=1, debug_trace=True, **common
         )
         self.assertEqual(len(projections), 1)
@@ -884,7 +884,11 @@ class CommunityTests(unittest.TestCase):
             debug_trace=True,
         )
         trace = cover._params["debug_trace"]
-        self.assertEqual(trace["schema_version"], 2)
+        self.assertEqual(trace["schema_version"], 3)
+        self.assertEqual(trace["projection_schema_version"], 2)
+        self.assertEqual(trace["mode"], "cover")
+        self.assertEqual(trace["counters"]["move_rows"], len(trace["moves"]))
+        self.assertEqual(trace["counters"]["projection_rows"], len(trace["projections"]))
         self.assertGreater(len(trace["moves"]), 0)
         self.assertGreater(len(trace["projections"]), 0)
 
@@ -894,6 +898,8 @@ class CommunityTests(unittest.TestCase):
             self.assertLessEqual(move["abs_error"], move["tolerance"])
             self.assertGreaterEqual(move["quality_after"], move["quality_before"])
             self.assertIsInstance(move["sequence"], int)
+            self.assertEqual(move["level"], 0)
+            self.assertLessEqual(move["occupied_after"] - move["occupied_before"], 3)
 
         for projection in trace["projections"]:
             self.assertGreater(projection["original_weight"], 0.0)
@@ -929,9 +935,10 @@ class CommunityTests(unittest.TestCase):
             n_iterations=0,
             debug_trace=True,
         )
-        self.assertEqual(len(raw), 5)
+        self.assertEqual(len(raw), 6)
         self.assertEqual(raw[3], [])
         self.assertEqual(raw[4], [])
+        self.assertEqual(raw[5][0], 3)  # counter schema version
 
         for _ in range(3):
             with self.assertRaises(InternalError):
@@ -949,10 +956,21 @@ class CommunityTests(unittest.TestCase):
             n_iterations=0,
             debug_trace=True,
         )
-        self.assertEqual(len(recovered), 5)
+        self.assertEqual(len(recovered), 6)
 
-        with self.assertRaises(ValueError):
-            g.community_leiden(max_memberships=1, debug_trace=True)
+        # Partitions are traced as well, including every aggregation level.
+        partition = g.community_leiden(
+            resolution=0.2, n_iterations=-1, debug_trace=True
+        )
+        trace = partition._params["debug_trace"]
+        self.assertIs(partition.debug_trace, trace)
+        self.assertEqual(trace["mode"], "partition")
+        self.assertEqual(trace["projections"], [])
+        self.assertEqual(len(trace["moves"]), trace["counters"]["accepted_moves"])
+        for move in trace["moves"]:
+            self.assertEqual(move["cardinality_before"], 1)
+            self.assertGreater(move["predicted_delta"], 0.0)
+            self.assertLessEqual(move["abs_error"], move["tolerance"])
 
     def testLeidenProjectionTraceCompatibility(self):
         from igraph.community import _format_leiden_projection_trace

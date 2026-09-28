@@ -82,13 +82,36 @@ class LeidenCountConstraintTests(unittest.TestCase):
             leiden(objective_function="CPM", n_communities=True)
         with self.assertRaises(ValueError):
             leiden(objective_function="CPM", max_total_communities=2, n_communities=3)
-        with self.assertRaises(ValueError):
-            leiden(objective_function="CPM", max_memberships=2, n_communities=2,
-                   debug_trace=True)
         with self.assertRaises(InternalError):
             leiden(objective_function="CPM", n_communities=35)
         with self.assertRaises(InternalError):
             leiden(objective_function="CPM", max_memberships=2, n_communities=69)
+
+    def test_trace_is_available_with_count_limits(self):
+        for max_memberships in (1, 3):
+            for limits in ({"max_total_communities": 4}, {"n_communities": 3}):
+                with self.subTest(max_memberships=max_memberships, **limits):
+                    set_random_number_generator(random.Random(11))
+                    plain = self.graph.community_leiden(
+                        objective_function="CPM", resolution=0.1,
+                        max_memberships=max_memberships, n_iterations=-1, **limits,
+                    )
+                    set_random_number_generator(random.Random(11))
+                    traced = self.graph.community_leiden(
+                        objective_function="CPM", resolution=0.1,
+                        max_memberships=max_memberships, n_iterations=-1,
+                        debug_trace=True, **limits,
+                    )
+                    self.assertEqual(plain.membership, traced.membership)
+                    trace = traced._params["debug_trace"]
+                    kind = "exact" if "n_communities" in limits else "at_most"
+                    self.assertEqual(trace["count_policy"]["kind"], kind)
+                    for move in trace["moves"]:
+                        if kind == "exact":
+                            self.assertEqual(move["occupied_before"], 3)
+                            self.assertEqual(move["occupied_after"], 3)
+                        else:
+                            self.assertLessEqual(move["occupied_after"], 4)
 
     def test_violating_start_is_rejected_not_repaired(self):
         singleton = list(range(self.graph.vcount()))
