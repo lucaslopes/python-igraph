@@ -828,6 +828,18 @@ class CommunityTests(unittest.TestCase):
         self.assertAlmostEqual(quality_after, quality_local, places=12)
         self.assertGreaterEqual(quality_after, quality_before - 1e-12)
 
+        # Diagnostic counts must describe the rejected proposal before the
+        # native guard restores the three-label local cover.
+        set_random_number_generator(random.Random(1452719858))
+        _, restored_count, _, _, projections = GraphBase.community_leiden(
+            g, n_iterations=1, debug_trace=True, **common
+        )
+        self.assertEqual(len(projections), 1)
+        self.assertEqual(len(projections[0]), 21)
+        self.assertFalse(projections[0][14])  # accepted
+        self.assertEqual(projections[0][19:], [3.0, 1.0])
+        self.assertEqual(restored_count, 3)
+
     def testLeidenOverlappingDiagnosticTrace(self):
         from igraph._igraph import GraphBase
 
@@ -872,7 +884,7 @@ class CommunityTests(unittest.TestCase):
             debug_trace=True,
         )
         trace = cover._params["debug_trace"]
-        self.assertEqual(trace["schema_version"], 1)
+        self.assertEqual(trace["schema_version"], 2)
         self.assertGreater(len(trace["moves"]), 0)
         self.assertGreater(len(trace["projections"]), 0)
 
@@ -893,8 +905,12 @@ class CommunityTests(unittest.TestCase):
             expected = (
                 projection["quality_projected"]
                 if projection["accepted"]
-                else projection["quality_before"]
+                else projection["quality_after_local"]
             )
+            self.assertIsInstance(projection["labels_local"], int)
+            self.assertIsInstance(projection["labels_proposed"], int)
+            self.assertGreaterEqual(projection["labels_local"], 1)
+            self.assertGreaterEqual(projection["labels_proposed"], 1)
             self.assertAlmostEqual(projection["quality_committed"], expected)
             self.assertGreaterEqual(
                 projection["quality_committed"] + 1e-12,
@@ -937,6 +953,41 @@ class CommunityTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             g.community_leiden(max_memberships=1, debug_trace=True)
+
+    def testLeidenProjectionTraceCompatibility(self):
+        from igraph.community import _format_leiden_projection_trace
+
+        old_row = [0.0] * 19
+        schema, columns, rows = _format_leiden_projection_trace([old_row])
+        self.assertEqual(schema, 1)
+        self.assertEqual(len(columns), 19)
+        self.assertNotIn("labels_local", rows[0])
+
+        schema, columns, rows = _format_leiden_projection_trace([old_row + [2.0, 1.0]])
+        self.assertEqual(schema, 2)
+        self.assertEqual(columns[-2:], ["labels_local", "labels_proposed"])
+        self.assertEqual(rows[0]["labels_local"], 2)
+        self.assertEqual(rows[0]["labels_proposed"], 1)
+        self.assertIsInstance(rows[0]["labels_local"], int)
+        self.assertEqual(_format_leiden_projection_trace([])[0], 2)
+
+        for malformed in ([old_row[:-1]], [old_row + [1.0]], [old_row, old_row + [2.0, 1.0]]):
+            with self.assertRaisesRegex(ValueError, "trace width"):
+                _format_leiden_projection_trace(malformed)
+
+    def testLeidenProjectionTraceCountsKeptAndRestoredTies(self):
+        g = Graph(n=3, edges=[(0, 1), (0, 2)])
+        set_random_number_generator(random.Random(0))
+        self.addCleanup(set_random_number_generator, random)
+        result = g.community_leiden(
+            resolution=0, max_memberships=2, initial_membership=[[0, 1]] * 3,
+            n_iterations=2, local_move_only=False, debug_trace=True,
+        )
+        rows = result._params["debug_trace"]["projections"]
+        self.assertEqual(
+            [(row["labels_local"], row["labels_proposed"], row["accepted"]) for row in rows],
+            [(2, 1, True), (1, 1, False)],
+        )
 
     @unittest.skipUnless(hasattr(signal, "SIGALRM"), "requires POSIX SIGALRM")
     def testLeidenOverlappingInterruptsAndRecoversInSubprocess(self):

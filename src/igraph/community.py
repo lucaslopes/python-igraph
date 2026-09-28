@@ -489,6 +489,8 @@ _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS = (
     "local_changed",
     "token_changed",
     "dedup_changed",
+    "labels_local",
+    "labels_proposed",
 )
 
 
@@ -497,6 +499,8 @@ def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_colu
     integer_columns = set(integer_columns)
     boolean_columns = set(boolean_columns)
     for row in rows:
+        if len(row) != len(columns):
+            raise ValueError("Unexpected overlapping Leiden diagnostic trace width")
         record = dict(zip(columns, row))
         for name in integer_columns:
             record[name] = int(record[name])
@@ -504,6 +508,25 @@ def _format_leiden_trace_rows(columns, rows, *, integer_columns=(), boolean_colu
             record[name] = bool(record[name])
         result.append(record)
     return result
+
+
+def _format_leiden_projection_trace(rows):
+    # 1.0.0.5 appends label counts. Keep older native libraries readable and
+    # identify their weaker trace explicitly, without fabricating counts.
+    width = len(rows[0]) if rows else len(_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS)
+    if width not in (19, 21):
+        raise ValueError("Unexpected overlapping Leiden projection trace width")
+    columns = _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS[:width]
+    records = _format_leiden_trace_rows(
+        columns,
+        rows,
+        integer_columns={
+            "iteration", "token_count", "token_edge_count", "collision_count",
+            "labels_local", "labels_proposed",
+        }.intersection(columns),
+        boolean_columns={"accepted", "local_changed", "token_changed", "dedup_changed"},
+    )
+    return (2 if width == 21 else 1), list(columns), records
 
 
 def _community_leiden(
@@ -563,8 +586,10 @@ def _community_leiden(
       a negative number of iterations will run until a stable iteration is
       encountered and then request a complete tolerance-level response sweep.
       Positive overlapping multilevel budgets may stop before that sweep, but
-      each projected iteration is retained only when original-space quality
-      improves beyond the numerical margin.
+      a token proposal is compared with the cover after local moving. It is
+      retained if its original-space quality improves beyond the numerical
+      margin, or ties within the margin and occupies fewer labels (at most
+      C{graph.vcount()} ties per call); otherwise that local cover is restored.
     @param allow_isolation: If true, nodes are allowed to move to empty
       communities, effectively creating new clusters. If false, nodes
       can only move to existing non-empty communities, preventing the
@@ -583,7 +608,10 @@ def _community_leiden(
       original-space move directly and record accepted-move and token-projection
       diagnostics in C{result._params["debug_trace"]}. This validation path is
       intentionally expensive and is intended only for bounded fixtures. It
-      cannot be combined with the community-count constraints below.
+      cannot be combined with the community-count constraints below. Trace
+      schema 2 appends C{labels_local} and C{labels_proposed} to the 19 existing
+      projection columns. Older 19-column native traces decode as schema 1
+      without these counts; accepted ties cannot be fully audited from them.
     @param max_total_communities: if given, at most this many communities are
       occupied by every state visited by local moving, including every
       aggregate and token level of the multilevel phase. C{None} disables the
@@ -593,8 +621,10 @@ def _community_leiden(
       occupied; no community is created or emptied. It must not exceed
       C{max_total_communities}, the vertex count for partitions, or the
       vertex count times C{max_memberships} for covers. Without an initial
-      membership, vertex M{v} starts in community M{v mod K}. An initial
-      membership that violates a constraint is rejected.
+      membership and C{K <= graph.vcount()}, vertex M{v} starts in community
+      M{v mod K}. For larger feasible C{K} in overlapping mode, labels are
+      distributed round-robin over vertices, giving some vertices multiple
+      memberships. An initial membership that violates a constraint is rejected.
     @return: a L{VertexClustering} when C{max_memberships == 1}, or a
       L{VertexCover} when C{max_memberships > 1}. The clustering carries a
       C{quality} parameter with the internal quality of the result.
@@ -720,8 +750,11 @@ def _community_leiden(
     cover = VertexCover(graph, clusters)
     cover._params = {"quality": quality}
     if debug_trace:
+        trace_schema, projection_columns, projections = _format_leiden_projection_trace(
+            projection_rows
+        )
         cover._params["debug_trace"] = {
-            "schema_version": 1,
+            "schema_version": trace_schema,
             "move_columns": list(_LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS),
             "moves": _format_leiden_trace_rows(
                 _LEIDEN_OVERLAP_MOVE_TRACE_COLUMNS,
@@ -734,23 +767,8 @@ def _community_leiden(
                     "cardinality_after",
                 },
             ),
-            "projection_columns": list(_LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS),
-            "projections": _format_leiden_trace_rows(
-                _LEIDEN_OVERLAP_PROJECTION_TRACE_COLUMNS,
-                projection_rows,
-                integer_columns={
-                    "iteration",
-                    "token_count",
-                    "token_edge_count",
-                    "collision_count",
-                },
-                boolean_columns={
-                    "accepted",
-                    "local_changed",
-                    "token_changed",
-                    "dedup_changed",
-                },
-            ),
+            "projection_columns": projection_columns,
+            "projections": projections,
         }
     return cover
 

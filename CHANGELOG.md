@@ -12,11 +12,21 @@
 
 ### Changed
 
+- Overlapping diagnostics decode both the legacy 19-column projection trace
+  and the 21-column trace with pre-rollback label counts. Trace metadata
+  identifies the available schema and columns.
 - Requires the native igraph 1.0.0.5 changes (faster overlapping local
   moving, count constraints, and the fixes listed in the C changelog). Before
   a release, `vendor/source/igraph` must point at the published C 1.0.0.5
   commit; this development branch still vendors C `1.0.0.4` and is built
   against a local C prefix.
+
+### Fixed
+
+- Invalid random-number generators release partially acquired references and
+  preserve the active generator; errors in optional attributes propagate.
+- Leiden preserves exceptions raised by boolean arguments and avoids using
+  an unallocated node-weight vector when normalization setup fails.
 
 ## [1.0.0.4] - 2026-09-12
 
