@@ -1,7 +1,7 @@
 import random
 import unittest
 
-from igraph import Graph, InternalError, set_random_number_generator
+from igraph import Graph, GraphBase, InternalError, set_random_number_generator
 
 
 class LeidenCountConstraintTests(unittest.TestCase):
@@ -103,6 +103,37 @@ class LeidenCountConstraintTests(unittest.TestCase):
                 objective_function="CPM", max_memberships=2,
                 initial_membership=rows, n_communities=3,
             )
+
+    def test_native_boolean_conversion_preserves_the_original_error(self):
+        class BrokenBool:
+            def __bool__(self):
+                raise RuntimeError("cannot evaluate Leiden flag")
+
+        for name in (
+            "allow_isolation", "local_move_only", "debug_trace", "normalize_resolution"
+        ):
+            for max_memberships in (1, 2):
+                with self.subTest(name=name, max_memberships=max_memberships):
+                    with self.assertRaisesRegex(RuntimeError, "cannot evaluate Leiden flag"):
+                        GraphBase.community_leiden(
+                            self.graph, n_iterations=0, max_memberships=max_memberships,
+                            **{name: BrokenBool()},
+                        )
+
+    def test_native_boolean_flags_are_evaluated_once(self):
+        class CountingBool:
+            calls = 0
+
+            def __bool__(self):
+                self.calls += 1
+                return False
+
+        for name in (
+            "allow_isolation", "local_move_only", "debug_trace", "normalize_resolution"
+        ):
+            flag = CountingBool()
+            GraphBase.community_leiden(self.graph, n_iterations=0, **{name: flag})
+            self.assertEqual(flag.calls, 1, name)
 
 
 if __name__ == "__main__":

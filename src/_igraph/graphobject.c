@@ -13790,6 +13790,8 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
   igraph_bool_t diagnostic_traces_valid = false;
   igraph_bool_t start = true;
   igraph_bool_t overlapping;
+  int truth;
+  igraph_bool_t normalize_resolution_value;
   igraph_int_t nb_clusters = 0;
   igraph_real_t quality = 0.0;
   igraph_matrix_t move_trace, projection_trace;
@@ -13799,9 +13801,20 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         &max_total_communities, &n_communities))
     return NULL;
 
-  allow_isolation = PyObject_IsTrue(allow_isolation_o);
-  local_move_only = PyObject_IsTrue(local_move_only_o);
-  debug_trace = PyObject_IsTrue(debug_trace_o);
+  /* Convert before allocating native objects. A failed __bool__ must leave
+   * its original exception intact, without entering Leiden. */
+  truth = PyObject_IsTrue(allow_isolation_o);
+  if (truth < 0) return NULL;
+  allow_isolation = truth;
+  truth = PyObject_IsTrue(local_move_only_o);
+  if (truth < 0) return NULL;
+  local_move_only = truth;
+  truth = PyObject_IsTrue(debug_trace_o);
+  if (truth < 0) return NULL;
+  debug_trace = truth;
+  truth = PyObject_IsTrue(normalize_resolution);
+  if (truth < 0) return NULL;
+  normalize_resolution_value = truth;
 
   if (max_memberships < 1) {
     PyErr_SetString(PyExc_ValueError, "maximum number of memberships must be at least 1");
@@ -13829,7 +13842,7 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
       "debug_trace is available only in overlapping Leiden mode");
     return NULL;
   }
-  if (overlapping && PyObject_IsTrue(normalize_resolution)) {
+  if (overlapping && normalize_resolution_value) {
     PyErr_SetString(PyExc_ValueError,
       "resolution normalization is not supported for overlapping Leiden");
     return NULL;
@@ -13908,7 +13921,7 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
     }
   }
 
-  if (!error && PyObject_IsTrue(normalize_resolution))
+  if (!error && normalize_resolution_value)
   {
     /* If we need to normalize the resolution parameter,
      * we will need to have node weights. */
@@ -13930,7 +13943,9 @@ PyObject *igraphmodule_Graph_community_leiden(igraphmodule_GraphObject *self,
         error = -1;
       }
     }
-    resolution /= igraph_vector_sum(node_weights);
+    if (!error) {
+      resolution /= igraph_vector_sum(node_weights);
+    }
   }
 
   /* Run actual Leiden algorithm for several iterations. */

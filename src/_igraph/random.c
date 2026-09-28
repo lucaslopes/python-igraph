@@ -61,6 +61,18 @@ static igraph_rng_t igraph_rng_default_saved = {0};
  * stored in igraph_rng_Python_state (as opposed to the C-level default). */
 static igraph_bool_t igraph_rng_Python_active = false;
 
+static void igraph_rng_Python_clear_state(igraph_i_rng_Python_state_t *state) {
+  Py_XDECREF(state->generator);
+  Py_XDECREF(state->getrandbits_func);
+  Py_XDECREF(state->randint_func);
+  Py_XDECREF(state->random_func);
+  Py_XDECREF(state->gauss_func);
+  Py_XDECREF(state->rng_bits_as_pyobject);
+  Py_XDECREF(state->zero_as_pyobject);
+  Py_XDECREF(state->one_as_pyobject);
+  Py_XDECREF(state->rng_max_as_pyobject);
+}
+
 igraph_error_t igraph_rng_Python_init(void **state) {
   IGRAPH_ERROR("Python RNG error, unsupported function called",
       IGRAPH_EINTERNAL);
@@ -77,8 +89,7 @@ void igraph_rng_Python_destroy(void *state) {
  * \brief Sets the random number generator used by igraph.
  */
 PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
-  igraph_i_rng_Python_state_t new_state, old_state;
-  PyObject* func;
+  igraph_i_rng_Python_state_t new_state = {0}, old_state;
 
   if (object == Py_None) {
     /* Reverting to the default igraph random number generator instead
@@ -89,51 +100,50 @@ PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
   }
 
 #define GET_FUNC(name) { \
-  func = PyObject_GetAttrString(object, name); \
-  if (func == 0) {\
-    return 0; \
-  } else if (!PyCallable_Check(func)) { \
-    PyErr_SetString(PyExc_TypeError, "'" name "' attribute must be callable"); \
-    return 0; \
+  new_state.name##_func = PyObject_GetAttrString(object, #name); \
+  if (new_state.name##_func == 0) {\
+    goto error; \
+  } else if (!PyCallable_Check(new_state.name##_func)) { \
+    PyErr_SetString(PyExc_TypeError, "'" #name "' attribute must be callable"); \
+    goto error; \
   } \
 }
 
 #define GET_OPTIONAL_FUNC(name) { \
-  if (PyObject_HasAttrString(object, name)) { \
-    func = PyObject_GetAttrString(object, name); \
-    if (func == 0) { \
-      return 0; \
-    } else if (!PyCallable_Check(func)) { \
-      PyErr_SetString(PyExc_TypeError, "'" name "' attribute must be callable"); \
-      return 0; \
+  new_state.name##_func = PyObject_GetAttrString(object, #name); \
+  if (new_state.name##_func == 0) { \
+    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) { \
+      goto error; \
     } \
-  } else { \
-    func = 0; \
+    PyErr_Clear(); \
+  } else if (!PyCallable_Check(new_state.name##_func)) { \
+    PyErr_SetString(PyExc_TypeError, "'" #name "' attribute must be callable"); \
+    goto error; \
   } \
 }
 
-  GET_OPTIONAL_FUNC("getrandbits"); new_state.getrandbits_func = func;
-  GET_FUNC("randint"); new_state.randint_func = func;
-  GET_FUNC("random"); new_state.random_func = func;
-  GET_FUNC("gauss"); new_state.gauss_func = func;
+  GET_OPTIONAL_FUNC(getrandbits);
+  GET_FUNC(randint);
+  GET_FUNC(random);
+  GET_FUNC(gauss);
 
   /* construct the arguments of getrandbits(RNG_BITS) and randint(0, (2^RNG_BITS)-1)
    * in advance */
   new_state.rng_bits_as_pyobject = PyLong_FromLong(RNG_BITS);
   if (new_state.rng_bits_as_pyobject == 0) {
-    return 0;
+    goto error;
   }
   new_state.zero_as_pyobject = PyLong_FromLong(0);
   if (new_state.zero_as_pyobject == 0) {
-    return 0;
+    goto error;
   }
   new_state.one_as_pyobject = PyLong_FromLong(1);
   if (new_state.one_as_pyobject == 0) {
-    return 0;
+    goto error;
   }
   new_state.rng_max_as_pyobject = PyLong_FromSize_t(RNG_MAX);
   if (new_state.rng_max_as_pyobject == 0) {
-    return 0;
+    goto error;
   }
 
 #undef GET_FUNC
@@ -144,20 +154,15 @@ PyObject* igraph_rng_Python_set_generator(PyObject* self, PyObject* object) {
 
   old_state = igraph_rng_Python_state;
   igraph_rng_Python_state = new_state;
-  Py_XDECREF(old_state.generator);
-  Py_XDECREF(old_state.getrandbits_func);
-  Py_XDECREF(old_state.randint_func);
-  Py_XDECREF(old_state.random_func);
-  Py_XDECREF(old_state.gauss_func);
-  Py_XDECREF(old_state.rng_bits_as_pyobject);
-  Py_XDECREF(old_state.zero_as_pyobject);
-  Py_XDECREF(old_state.one_as_pyobject);
-  Py_XDECREF(old_state.rng_max_as_pyobject);
-
   igraph_rng_set_default(&igraph_rng_Python);
   igraph_rng_Python_active = true;
+  igraph_rng_Python_clear_state(&old_state);
 
   Py_RETURN_NONE;
+
+error:
+  igraph_rng_Python_clear_state(&new_state);
+  return NULL;
 }
 
 /**
@@ -322,6 +327,7 @@ igraph_rng_type_t igraph_rngtype_Python = {
 
 void igraphmodule_init_rng(PyObject* igraph_module) {
   PyObject* random_module;
+  PyObject* result;
 
   if (igraph_rng_default_saved.type == 0) {
     igraph_rng_default_saved = *igraph_rng_default();
@@ -341,11 +347,13 @@ void igraphmodule_init_rng(PyObject* igraph_module) {
   igraph_rng_Python.type = &igraph_rngtype_Python;
   igraph_rng_Python.state = &igraph_rng_Python_state;
 
-  if (igraph_rng_Python_set_generator(igraph_module, random_module) == 0) {
+  result = igraph_rng_Python_set_generator(igraph_module, random_module);
+  Py_DECREF(random_module);
+  if (result == 0) {
     PyErr_WriteUnraisable(PyErr_Occurred());
     PyErr_Clear();
     return;
   }
 
-  Py_DECREF(random_module);
+  Py_DECREF(result);
 }
